@@ -1,0 +1,1 @@
+"""FaceID + blockchain verification CLI."""
