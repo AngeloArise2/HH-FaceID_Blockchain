@@ -1,0 +1,2 @@
+[console_scripts]
+facechain = facechain.cli:app

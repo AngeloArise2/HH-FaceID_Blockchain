@@ -28,6 +28,7 @@ facechain = "facechain.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "--strict-markers --cov=facechain --cov-report=term-missing"
 
 [tool.ruff]

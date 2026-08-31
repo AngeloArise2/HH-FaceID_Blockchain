@@ -1,6 +1,7 @@
 """Identity module interface."""
 
 from typing import Protocol
+
 from contracts.domain import AuthorizedImage, FaceScan
 
 

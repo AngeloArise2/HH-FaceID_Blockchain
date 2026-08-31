@@ -1,6 +1,7 @@
 """Discovery module interface."""
 
 from pydantic import BaseModel
+
 from contracts.domain import AuthorizedImage, EvidenceBundle, FaceScan, PublicPost
 
 

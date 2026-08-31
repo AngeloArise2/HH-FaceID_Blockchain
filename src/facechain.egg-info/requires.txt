@@ -1,0 +1,17 @@
+httpx<1,>=0.27
+opencv-python-headless<5,>=4.10
+pydantic<3,>=2.9
+pydantic-settings<3,>=2.6
+typer<1,>=0.12
+web3<8,>=7.0
+
+[dev]
+mypy<2,>=1.13
+pytest<9,>=8.3
+pytest-cov<7,>=5
+respx<1,>=0.21
+ruff<1,>=0.8
+
+[face]
+insightface<1,>=0.7.3
+onnxruntime<2,>=1.19
