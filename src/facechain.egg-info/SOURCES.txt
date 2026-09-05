@@ -11,7 +11,12 @@ src/facechain.egg-info/entry_points.txt
 src/facechain.egg-info/requires.txt
 src/facechain.egg-info/top_level.txt
 src/facechain/discovery/__init__.py
+src/facechain/discovery/exceptions.py
+src/facechain/discovery/provider.py
+src/facechain/discovery/service.py
 src/facechain/identity/__init__.py
+src/facechain/identity/exceptions.py
+src/facechain/identity/service.py
 src/facechain/ledger/__init__.py
 src/facechain/pipeline/__init__.py
 tests/test_contract.py

@@ -12,6 +12,7 @@ Requires-Dist: web3<8,>=7.0
 Provides-Extra: face
 Requires-Dist: insightface<1,>=0.7.3; extra == "face"
 Requires-Dist: onnxruntime<2,>=1.19; extra == "face"
+Requires-Dist: stringzilla<5.1.2; extra == "face"
 Provides-Extra: dev
 Requires-Dist: mypy<2,>=1.13; extra == "dev"
 Requires-Dist: pytest<9,>=8.3; extra == "dev"
