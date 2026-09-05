@@ -11,7 +11,11 @@ from facechain.discovery.provider import (
     FakeDiscoveryProvider,
     SerpAPILensProvider,
 )
-from facechain.discovery.service import DiscoveryService
+from facechain.discovery.service import (
+    DiscoveryService,
+    canonicalize_evidence,
+    compute_evidence_hash,
+)
 
 __all__ = [
     "DiscoveryConfigError",
@@ -22,4 +26,6 @@ __all__ = [
     "FakeDiscoveryProvider",
     "NoMatchFoundError",
     "SerpAPILensProvider",
+    "canonicalize_evidence",
+    "compute_evidence_hash",
 ]

@@ -16,12 +16,25 @@ from facechain.discovery.exceptions import (
     DiscoveryUnavailableError,
     NoMatchFoundError,
 )
+from facechain.discovery.models import (
+    DiscoveryResult as DiscoveryResultModel,
+)
+from facechain.discovery.models import (
+    EvidenceBundle as EvidenceBundleModel,
+)
+from facechain.discovery.models import (
+    PublicPost as PublicPostModel,
+)
 from facechain.discovery.provider import (
     DiscoveryProvider,
     FakeDiscoveryProvider,
     SerpAPILensProvider,
 )
-from facechain.discovery.service import DiscoveryService
+from facechain.discovery.service import (
+    DiscoveryService,
+    canonicalize_evidence,
+    compute_evidence_hash,
+)
 
 
 @pytest.fixture
@@ -66,6 +79,12 @@ def test_discovery_exception_hierarchy() -> None:
     assert issubclass(DiscoveryUnavailableError, DiscoveryError)
     assert issubclass(NoMatchFoundError, DiscoveryError)
     assert issubclass(DiscoveryConfigError, DiscoveryError)
+
+
+def test_discovery_models_reexport() -> None:
+    assert DiscoveryResultModel is DiscoveryResult
+    assert EvidenceBundleModel is not None
+    assert PublicPostModel is PublicPost
 
 
 def test_discovery_service_successful_match(
@@ -467,4 +486,162 @@ def test_serpapi_fallback_platform_and_truncated_snippet(
     assert len(result.matched_post.text_excerpt) == 500
     assert result.matched_post.text_excerpt.endswith("...")
     assert result.matched_post.image_url is None
+
+
+# =========================================================================
+# Phase 3: Evidence Assembly and Canonical Serialization Tests
+# =========================================================================
+
+
+def test_canonicalize_evidence_stability(
+    sample_authorized_image: AuthorizedImage,
+    sample_face_scan: FaceScan,
+    sample_public_post: PublicPost,
+) -> None:
+    result = DiscoveryResult(
+        provider="serpapi_google_lens",
+        matched_post=sample_public_post,
+    )
+    service = DiscoveryService(provider=FakeDiscoveryProvider(canned_result=result))
+    bundle = service.assemble_evidence(result, sample_authorized_image, sample_face_scan)
+
+    canonical_1 = canonicalize_evidence(bundle)
+    canonical_2 = canonicalize_evidence(bundle)
+
+    assert canonical_1 == canonical_2
+    assert compute_evidence_hash(bundle) == compute_evidence_hash(bundle)
+
+
+def test_canonicalize_evidence_format_and_compact_separators(
+    sample_authorized_image: AuthorizedImage,
+    sample_face_scan: FaceScan,
+    sample_public_post: PublicPost,
+) -> None:
+    result = DiscoveryResult(
+        provider="serpapi_google_lens",
+        matched_post=sample_public_post,
+    )
+    service = DiscoveryService(provider=FakeDiscoveryProvider(canned_result=result))
+    bundle = service.assemble_evidence(result, sample_authorized_image, sample_face_scan)
+
+    canonical_str = canonicalize_evidence(bundle)
+
+    # Must be compact: no space after colon or comma
+    assert ": " not in canonical_str
+    assert ", " not in canonical_str
+    # Keys must be sorted alphabetically at root
+    keys_in_order = [
+        "consent_reference",
+        "face_embedding_sha256",
+        "input_image_sha256",
+        "post",
+        "provider",
+        "schema_version",
+    ]
+    last_idx = -1
+    for key in keys_in_order:
+        idx = canonical_str.index(f'"{key}":')
+        assert idx > last_idx
+        last_idx = idx
+
+
+def test_evidence_hash_deterministic_sha256_format(
+    sample_authorized_image: AuthorizedImage,
+    sample_face_scan: FaceScan,
+    sample_public_post: PublicPost,
+) -> None:
+    result = DiscoveryResult(
+        provider="serpapi_google_lens",
+        matched_post=sample_public_post,
+    )
+    service = DiscoveryService(provider=FakeDiscoveryProvider(canned_result=result))
+    bundle = service.assemble_evidence(result, sample_authorized_image, sample_face_scan)
+
+    hash_val = compute_evidence_hash(bundle)
+
+    assert len(hash_val) == 64
+    assert hash_val == hash_val.lower()
+    assert all(c in "0123456789abcdef" for c in hash_val)
+
+
+def test_evidence_hash_sensitivity_to_modifications(
+    sample_authorized_image: AuthorizedImage,
+    sample_face_scan: FaceScan,
+    sample_public_post: PublicPost,
+) -> None:
+    result = DiscoveryResult(
+        provider="serpapi_google_lens",
+        matched_post=sample_public_post,
+    )
+    service = DiscoveryService(provider=FakeDiscoveryProvider(canned_result=result))
+    bundle = service.assemble_evidence(result, sample_authorized_image, sample_face_scan)
+    base_hash = compute_evidence_hash(bundle)
+
+    # Modifying consent_reference
+    altered_consent = bundle.model_copy(update={"consent_reference": "altered-consent-999"})
+    assert compute_evidence_hash(altered_consent) != base_hash
+
+    # Modifying input_image_sha256
+    altered_img_hash = bundle.model_copy(update={"input_image_sha256": "f" * 64})
+    assert compute_evidence_hash(altered_img_hash) != base_hash
+
+    # Modifying face_embedding_sha256
+    altered_face_hash = bundle.model_copy(update={"face_embedding_sha256": "0" * 64})
+    assert compute_evidence_hash(altered_face_hash) != base_hash
+
+    # Modifying provider
+    altered_provider = bundle.model_copy(update={"provider": "different_provider"})
+    assert compute_evidence_hash(altered_provider) != base_hash
+
+    # Modifying post title
+    altered_post_title = bundle.model_copy(
+        update={"post": sample_public_post.model_copy(update={"title": "Altered Title"})}
+    )
+    assert compute_evidence_hash(altered_post_title) != base_hash
+
+    # Modifying post source_url
+    altered_post_url = bundle.model_copy(
+        update={
+            "post": sample_public_post.model_copy(
+                update={"source_url": HttpUrl("https://example.com/altered")}
+            )
+        }
+    )
+    assert compute_evidence_hash(altered_post_url) != base_hash
+
+
+def test_evidence_bundle_privacy_cleanliness(
+    sample_authorized_image: AuthorizedImage,
+    sample_face_scan: FaceScan,
+    sample_public_post: PublicPost,
+) -> None:
+    result = DiscoveryResult(
+        provider="serpapi_google_lens",
+        matched_post=sample_public_post,
+    )
+    service = DiscoveryService(provider=FakeDiscoveryProvider(canned_result=result))
+    bundle = service.assemble_evidence(result, sample_authorized_image, sample_face_scan)
+    serialized = canonicalize_evidence(bundle)
+
+    # Must not contain private image paths, api keys, or raw face embeddings
+    assert "/path/to/consented-subject.jpg" not in serialized
+    assert "api_key" not in serialized
+    assert "private_key" not in serialized
+    assert "secret" not in serialized
+
+
+def test_service_canonicalize_and_fingerprint_delegation(
+    sample_authorized_image: AuthorizedImage,
+    sample_face_scan: FaceScan,
+    sample_public_post: PublicPost,
+) -> None:
+    result = DiscoveryResult(
+        provider="serpapi_google_lens",
+        matched_post=sample_public_post,
+    )
+    service = DiscoveryService(provider=FakeDiscoveryProvider(canned_result=result))
+    bundle = service.assemble_evidence(result, sample_authorized_image, sample_face_scan)
+
+    assert service.canonicalize(bundle) == canonicalize_evidence(bundle)
+    assert service.fingerprint(bundle) == compute_evidence_hash(bundle)
 
