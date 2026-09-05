@@ -1,12 +1,30 @@
-"""Discovery service orchestrator."""
+"""Discovery service orchestrator and canonical evidence assembly."""
+
+import hashlib
+import json
 
 from contracts.discovery import DiscoveryResult
 from contracts.domain import AuthorizedImage, EvidenceBundle, FaceScan
 from facechain.discovery.provider import DiscoveryProvider
 
 
+def canonicalize_evidence(evidence: EvidenceBundle) -> str:
+    """Serialize an EvidenceBundle into canonical UTF-8 JSON with sorted keys and compact separators.
+
+    Guarantees deterministic, reproducible byte representations across platforms.
+    """
+    data = evidence.model_dump(mode="json")
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def compute_evidence_hash(evidence: EvidenceBundle) -> str:
+    """Compute the deterministic SHA-256 lowercase hex fingerprint of canonical evidence JSON."""
+    canonical_bytes = canonicalize_evidence(evidence).encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest().lower()
+
+
 class DiscoveryService:
-    """Orchestrates public visual discovery using an injected provider."""
+    """Orchestrates public visual discovery and canonical evidence assembly."""
 
     def __init__(self, provider: DiscoveryProvider) -> None:
         self._provider = provider
@@ -40,6 +58,9 @@ class DiscoveryService:
     ) -> EvidenceBundle:
         """Assemble a canonical EvidenceBundle from discovery result, image, and scan.
 
+        Ensures only normalized, public result fields and consent references are included,
+        strictly excluding raw image bytes, private paths, or provider credentials.
+
         Args:
             result: Discovery result containing matched post and provider.
             image: Authorized input image.
@@ -56,3 +77,11 @@ class DiscoveryService:
             provider=result.provider,
             post=result.matched_post,
         )
+
+    def canonicalize(self, evidence: EvidenceBundle) -> str:
+        """Serialize evidence to deterministic canonical JSON."""
+        return canonicalize_evidence(evidence)
+
+    def fingerprint(self, evidence: EvidenceBundle) -> str:
+        """Calculate the SHA-256 fingerprint of the canonical evidence."""
+        return compute_evidence_hash(evidence)
