@@ -5,7 +5,9 @@ from facechain.identity.exceptions import (
     InputValidationError,
     MultipleFacesDetectedError,
     NoFaceDetectedError,
+    RecognitionUnavailableError,
 )
+from facechain.identity.provider import InsightFaceFaceScanner
 from facechain.identity.service import FakeFaceScanner, IdentityService
 
 __all__ = [
@@ -13,6 +15,8 @@ __all__ = [
     "IdentityError",
     "IdentityService",
     "InputValidationError",
+    "InsightFaceFaceScanner",
     "MultipleFacesDetectedError",
     "NoFaceDetectedError",
+    "RecognitionUnavailableError",
 ]

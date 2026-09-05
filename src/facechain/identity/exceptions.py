@@ -15,3 +15,7 @@ class NoFaceDetectedError(IdentityError):
 
 class MultipleFacesDetectedError(IdentityError):
     """Raised when the face provider detects more than one face in the input image."""
+
+
+class RecognitionUnavailableError(IdentityError):
+    """Raised when the face recognition engine is unavailable or fails."""
