@@ -107,7 +107,7 @@ class InsightFaceFaceScanner:
         if self._analyzer is not None:
             return self._analyzer
         try:
-            from insightface.app import FaceAnalysis  # type: ignore[import-untyped]
+            from insightface.app import FaceAnalysis  # type: ignore
 
             app = FaceAnalysis(
                 name=self._model_name,
