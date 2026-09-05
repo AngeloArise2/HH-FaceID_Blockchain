@@ -6,7 +6,11 @@ from facechain.discovery.exceptions import (
     DiscoveryUnavailableError,
     NoMatchFoundError,
 )
-from facechain.discovery.provider import DiscoveryProvider, FakeDiscoveryProvider
+from facechain.discovery.provider import (
+    DiscoveryProvider,
+    FakeDiscoveryProvider,
+    SerpAPILensProvider,
+)
 from facechain.discovery.service import DiscoveryService
 
 __all__ = [
@@ -17,4 +21,5 @@ __all__ = [
     "DiscoveryUnavailableError",
     "FakeDiscoveryProvider",
     "NoMatchFoundError",
+    "SerpAPILensProvider",
 ]
