@@ -645,3 +645,55 @@ def test_service_canonicalize_and_fingerprint_delegation(
     assert service.canonicalize(bundle) == canonicalize_evidence(bundle)
     assert service.fingerprint(bundle) == compute_evidence_hash(bundle)
 
+
+@respx.mock
+def test_serpapi_multiple_platforms_deduplicated_and_primary_first(
+    sample_face_scan: FaceScan,
+) -> None:
+    respx.get("https://serpapi.com/search.json").respond(
+        status_code=200,
+        json={
+            "visual_matches": [
+                {
+                    "title": "News Feature",
+                    "link": "https://news.example.org/article/42",
+                    "source": "NewsOutlet",
+                },
+                {
+                    "title": "Twin Post on Same Platform",
+                    "link": "https://news.example.org/article/99",
+                    "source": "NewsOutlet",
+                },
+                {
+                    "title": "Social Profile",
+                    "link": "https://x.example/user/1",
+                    "source": "XProfile",
+                    "snippet": "Short bio.",
+                },
+                {
+                    "title": "Photo Page",
+                    "link": "https://ig.example/u/2",
+                    "source": "InstagramProfile",
+                },
+                {"title": "No Http Link", "link": "ftp://invalid"},
+            ]
+        },
+    )
+    image = AuthorizedImage(
+        image_path="https://example.com/subject.jpg",
+        sha256="c" * 64,
+        consent_reference="consent-multi-123",
+    )
+
+    provider = SerpAPILensProvider(api_key="key")
+    result = provider.search(image, sample_face_scan)
+
+    assert [m.post.platform for m in result.matches] == [
+        "NewsOutlet",
+        "XProfile",
+        "InstagramProfile",
+    ]
+    assert result.matched_post.source_url == HttpUrl("https://news.example.org/article/42")
+    assert result.matched_post == result.matches[0].post
+    assert all(m.confidence is None for m in result.matches)
+

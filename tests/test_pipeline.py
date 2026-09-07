@@ -8,7 +8,7 @@ import pytest
 from pydantic import HttpUrl, ValidationError
 from typer.testing import CliRunner
 
-from contracts.discovery import DiscoveryResult
+from contracts.discovery import DiscoveryMatch, DiscoveryResult
 from contracts.domain import AuthorizedImage, EvidenceBundle, PublicPost
 from contracts.hashing import compute_evidence_hash
 from contracts.ledger import LedgerReceipt, VerificationResult
@@ -122,17 +122,32 @@ class StubLedger:
         return VerificationResult(matched=True, evidence_sha256=digest, receipt=receipt)
 
 
-def _post() -> PublicPost:
+def _post(source_url: str = "https://example.com/posts/101", platform: str = "ExamplePlatform") -> PublicPost:
     return PublicPost(
-        source_url=HttpUrl("https://example.com/posts/101"),
-        platform="ExamplePlatform",
+        source_url=HttpUrl(source_url),
+        platform=platform,
         title="Public Profile Photo",
         retrieved_at=datetime.now(UTC),
     )
 
 
 def _discovery_result() -> DiscoveryResult:
-    return DiscoveryResult(provider="fake_lens", matched_post=_post())
+    primary = _post()
+    return DiscoveryResult(
+        provider="fake_lens",
+        matched_post=primary,
+        matches=[
+            DiscoveryMatch(post=primary, confidence=0.92),
+            DiscoveryMatch(
+                post=_post("https://x.example/user/1", "XProfile"),
+                confidence=0.71,
+            ),
+            DiscoveryMatch(
+                post=_post("https://ig.example/u/2", "InstagramProfile"),
+                confidence=None,
+            ),
+        ],
+    )
 
 
 def _make_image(path: Path) -> AuthorizedImage:
@@ -361,11 +376,33 @@ def test_cli_run_success_prints_events_and_writes_evidence(
     assert result.exit_code == 0
     for stage in ("validated", "face_scanned", "post_found", "anchored", "verified"):
         assert f"[{stage}]" in result.output
+    assert "3 platform match" in result.output
+    assert "[1/3] platform=ExamplePlatform confidence=92%" in result.output
+    assert "[2/3] platform=XProfile confidence=71%" in result.output
+    assert "[3/3] platform=InstagramProfile confidence=no provider score" in result.output
     run_dirs = list((tmp_path / "runs").iterdir())
     assert len(run_dirs) == 1
     evidence_file = run_dirs[0] / "evidence.json"
     assert evidence_file.exists()
     EvidenceBundle.model_validate_json(evidence_file.read_text())
+
+
+def test_cli_run_no_save_prints_evidence_without_writing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_build_pipeline", _stub_build_pipeline)
+    image_path = tmp_path / "input.jpg"
+    image_path.write_bytes(b"sample-image-bytes")
+
+    result = _cli_runner.invoke(
+        cli.app,
+        ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs"), "--no-save"],
+    )
+
+    assert result.exit_code == 0
+    assert "Evidence (not saved)" in result.output
+    assert "\"provider\": \"fake_lens\"" in result.output
+    assert not (tmp_path / "runs").exists()
 
 
 def test_cli_run_no_match_exits_six(

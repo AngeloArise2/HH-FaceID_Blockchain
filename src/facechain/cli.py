@@ -95,12 +95,14 @@ def _build_pipeline() -> FaceVerificationPipeline:
 def run(
     image: Annotated[Path, typer.Option("--image", help="Path to a consented face image")],
     runs_dir: Annotated[Path, typer.Option("--runs-dir", help="Directory for run outputs")] = Path("runs"),
+    no_save: Annotated[bool, typer.Option("--no-save", help="Print evidence to the terminal without writing evidence.json")] = False,
 ) -> None:
     """Run a face verification pipeline on a consented image.
 
     Validates the image, scans for a face, searches for a matching public post,
-    anchors the evidence fingerprint on-chain, and re-verifies it.  Writes
-    runs/<run-id>/evidence.json and prints each pipeline event as it happens.
+    anchors the evidence fingerprint on-chain, and re-verifies it.  Prints the
+    evidence bundle and every detected platform match to the terminal; writes
+    runs/<run-id>/evidence.json unless --no-save is given.
     """
     try:
         sha256 = hashlib.sha256(image.read_bytes()).hexdigest()
@@ -136,13 +138,38 @@ def run(
         detail = f" - {event.detail}" if event.detail else ""
         typer.echo(f"[{event.stage}]{detail}")
 
+    if result.matches:
+        typer.echo(
+            f"\n{len(result.matches)} platform match(es) found; checking each:"
+        )
+        for index, match in enumerate(result.matches, start=1):
+            confidence = match.confidence
+            score = f"{confidence * 100:.0f}%" if confidence is not None else "no provider score"
+            typer.echo(
+                f"  [{index}/{len(result.matches)}] "
+                f"platform={match.post.platform} confidence={score} "
+                f"source={match.post.source_url}"
+            )
+        typer.echo("")
+
     if result.evidence is None:
         raise typer.Exit(6)
+
+    printout = result.evidence.model_dump_json(indent=2)
+    if no_save:
+        typer.echo("Evidence (not saved):")
+        typer.echo(printout)
+        if any(event.stage == "failed" for event in result.events):
+            typer.echo("Error: run failed; no evidence was anchored on-chain", err=True)
+            raise typer.Exit(9)
+        return
 
     run_dir = runs_dir / result.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     evidence_path = run_dir / "evidence.json"
-    evidence_path.write_text(result.evidence.model_dump_json(indent=2))
+    evidence_path.write_text(printout)
+    typer.echo("Evidence bundle:")
+    typer.echo(printout)
     typer.echo(f"Evidence saved to {evidence_path}")
 
     if any(event.stage == "failed" for event in result.events):
