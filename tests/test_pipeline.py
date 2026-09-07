@@ -370,16 +370,21 @@ def test_cli_run_success_prints_events_and_writes_evidence(
     image_path.write_bytes(b"sample-image-bytes")
 
     result = _cli_runner.invoke(
-        cli.app, ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs")]
+        cli.app,
+        ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs"), "--save"],
     )
 
     assert result.exit_code == 0
     for stage in ("validated", "face_scanned", "post_found", "anchored", "verified"):
         assert f"[{stage}]" in result.output
     assert "3 platform match" in result.output
-    assert "[1/3] platform=ExamplePlatform confidence=92%" in result.output
-    assert "[2/3] platform=XProfile confidence=71%" in result.output
-    assert "[3/3] platform=InstagramProfile confidence=no provider score" in result.output
+    assert "ExamplePlatform" in result.output
+    assert "92%" in result.output
+    assert "XProfile" in result.output
+    assert "71%" in result.output
+    assert "no provider score" in result.output
+    assert "Evidence bundle" in result.output
+    assert "Evidence saved to" in result.output
     run_dirs = list((tmp_path / "runs").iterdir())
     assert len(run_dirs) == 1
     evidence_file = run_dirs[0] / "evidence.json"
@@ -387,7 +392,7 @@ def test_cli_run_success_prints_events_and_writes_evidence(
     EvidenceBundle.model_validate_json(evidence_file.read_text())
 
 
-def test_cli_run_no_save_prints_evidence_without_writing_file(
+def test_cli_run_default_prints_evidence_without_writing_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(cli, "_build_pipeline", _stub_build_pipeline)
@@ -396,12 +401,13 @@ def test_cli_run_no_save_prints_evidence_without_writing_file(
 
     result = _cli_runner.invoke(
         cli.app,
-        ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs"), "--no-save"],
+        ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs")],
     )
 
     assert result.exit_code == 0
-    assert "Evidence (not saved)" in result.output
-    assert "\"provider\": \"fake_lens\"" in result.output
+    assert "Evidence bundle" in result.output
+    assert '"provider": "fake_lens"' in result.output
+    assert "Evidence saved to" not in result.output
     assert not (tmp_path / "runs").exists()
 
 
@@ -462,11 +468,13 @@ def test_cli_run_chain_write_error_writes_evidence_and_exits_nine(
     image_path.write_bytes(b"sample-image-bytes")
 
     result = _cli_runner.invoke(
-        cli.app, ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs")]
+        cli.app,
+        ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs"), "--save"],
     )
 
     assert result.exit_code == 9
     assert "[failed]" in result.output
+    assert "Run failed; evidence was not anchored on-chain" in result.output
     run_dirs = list((tmp_path / "runs").iterdir())
     assert len(run_dirs) == 1
     evidence_file = run_dirs[0] / "evidence.json"
