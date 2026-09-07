@@ -145,6 +145,10 @@ def run(
     evidence_path.write_text(result.evidence.model_dump_json(indent=2))
     typer.echo(f"Evidence saved to {evidence_path}")
 
+    if any(event.stage == "failed" for event in result.events):
+        typer.echo("Error: run failed; evidence was written but not anchored", err=True)
+        raise typer.Exit(9)
+
 
 @app.command()
 def verify(

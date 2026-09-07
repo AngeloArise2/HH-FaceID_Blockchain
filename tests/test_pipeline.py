@@ -19,6 +19,7 @@ from facechain.discovery import (
     FakeDiscoveryProvider,
 )
 from facechain.identity import FakeFaceScanner, IdentityService
+from facechain.ledger import LedgerUnavailableError
 from facechain.pipeline import EvidenceLedger, FaceVerificationPipeline
 
 
@@ -80,12 +81,24 @@ def test_settings_rejects_unknown_discovery_mode() -> None:
 class StubLedger:
     """Fake EvidenceLedger; anchors into an in-memory store and verifies against it."""
 
-    def __init__(self, *, report_mismatch: bool = False, always_match: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        report_mismatch: bool = False,
+        always_match: bool = False,
+        anchor_error: Exception | None = None,
+    ) -> None:
         self._report_mismatch = report_mismatch
         self._always_match = always_match
+        self._anchor_error = anchor_error
         self._store: dict[str, LedgerReceipt] = {}
+        self.anchor_calls = 0
+        self.verify_calls = 0
 
     def anchor(self, evidence: EvidenceBundle) -> LedgerReceipt:
+        self.anchor_calls += 1
+        if self._anchor_error is not None:
+            raise self._anchor_error
         digest = compute_evidence_hash(evidence)
         receipt = LedgerReceipt(
             evidence_sha256=digest,
@@ -97,6 +110,7 @@ class StubLedger:
         return receipt
 
     def verify(self, evidence: EvidenceBundle) -> VerificationResult:
+        self.verify_calls += 1
         digest = compute_evidence_hash(evidence)
         if self._always_match:
             return VerificationResult(matched=True, evidence_sha256=digest)
@@ -223,6 +237,87 @@ def test_failed_event_detail_includes_reason(tmp_path: Path) -> None:
     assert len(failed_event.detail) > 0
 
 
+# ── Mocked end-to-end (four-case) ─────────────────────────────────────────
+
+
+def _ledger() -> StubLedger:
+    return StubLedger()
+
+
+def test_e2e_success_emits_ordered_events_and_matched_true(tmp_path: Path) -> None:
+    pipeline, image = _make_pipeline(tmp_path)
+
+    result = pipeline.run(image)
+
+    assert [event.stage for event in result.events] == [
+        "validated",
+        "face_scanned",
+        "post_found",
+        "anchored",
+        "verified",
+    ]
+    assert result.verification is not None
+    assert result.verification.matched is True
+    assert result.receipt is not None
+    assert result.evidence is not None
+
+
+def test_e2e_no_search_match_failed_event_and_no_ledger_call(tmp_path: Path) -> None:
+    ledger = _ledger()
+    pipeline, image = _make_pipeline(
+        tmp_path,
+        ledger=ledger,
+        provider=FakeDiscoveryProvider(),  # raises NoMatchFoundError
+    )
+
+    result = pipeline.run(image)
+
+    assert ledger.anchor_calls == 0
+    assert ledger.verify_calls == 0
+    assert [event.stage for event in result.events] == [
+        "validated",
+        "face_scanned",
+        "failed",
+    ]
+    assert isinstance(result.events[-1].detail, str)
+    assert len(result.events[-1].detail) > 0
+
+
+def test_e2e_chain_write_error_emits_failed_and_keeps_evidence(tmp_path: Path) -> None:
+    ledger = StubLedger(anchor_error=LedgerUnavailableError("Anvil unreachable"))
+    pipeline, image = _make_pipeline(tmp_path, ledger=ledger)
+
+    result = pipeline.run(image)
+
+    assert [event.stage for event in result.events] == [
+        "validated",
+        "face_scanned",
+        "post_found",
+        "failed",
+    ]
+    assert result.evidence is not None  # discovery result survives for evidence.json
+    assert result.receipt is None  # unanchored
+    assert result.verification is None
+    assert ledger.anchor_calls == 1
+    assert isinstance(result.events[-1].detail, str)
+    assert "Anvil unreachable" in result.events[-1].detail
+
+
+def test_e2e_altered_evidence_verify_returns_matched_false(tmp_path: Path) -> None:
+    ledger = _ledger()
+    pipeline, image = _make_pipeline(tmp_path, ledger=ledger)
+
+    first = pipeline.run(image)
+    assert first.evidence is not None
+    altered = first.evidence.model_copy(update={"provider": "tampered-provider"})
+
+    verification = pipeline.verify_bundle(altered)  # must not raise
+
+    assert verification.matched is False
+    assert verification.receipt is None
+    assert pipeline.verify_bundle(first.evidence).matched is True
+
+
 # ── CLI integration ────────────────────────────────────────────────────────
 
 
@@ -313,6 +408,34 @@ def test_cli_run_surfaces_documented_error(
 
     assert result.exit_code == 3
     assert "no face detected" in result.output
+
+
+def test_cli_run_chain_write_error_writes_evidence_and_exits_nine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _failing_anchor_pipeline() -> FaceVerificationPipeline:
+        return FaceVerificationPipeline(
+            identity=IdentityService(FakeFaceScanner("b" * 64)),
+            discovery=DiscoveryService(FakeDiscoveryProvider(canned_result=_discovery_result())),
+            ledger=StubLedger(anchor_error=LedgerUnavailableError("Anvil unreachable")),
+        )
+
+    monkeypatch.setattr(cli, "_build_pipeline", _failing_anchor_pipeline)
+    image_path = tmp_path / "input.jpg"
+    image_path.write_bytes(b"sample-image-bytes")
+
+    result = _cli_runner.invoke(
+        cli.app, ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs")]
+    )
+
+    assert result.exit_code == 9
+    assert "[failed]" in result.output
+    run_dirs = list((tmp_path / "runs").iterdir())
+    assert len(run_dirs) == 1
+    evidence_file = run_dirs[0] / "evidence.json"
+    assert evidence_file.exists()
+    bundle = EvidenceBundle.model_validate_json(evidence_file.read_text())
+    assert bundle.face_embedding_sha256 == "b" * 64
 
 
 def test_cli_verify_matched(

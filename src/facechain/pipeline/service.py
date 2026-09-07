@@ -14,7 +14,7 @@ from contracts.events import PipelineEvent
 from contracts.ledger import LedgerReceipt, VerificationResult
 from facechain.discovery import DiscoveryService, NoMatchFoundError
 from facechain.identity import IdentityService
-from facechain.ledger import EvidenceLedger
+from facechain.ledger import EvidenceLedger, LedgerUnavailableError
 
 EventStage = Literal["validated", "face_scanned", "post_found", "anchored", "verified", "failed"]
 
@@ -63,6 +63,9 @@ class FaceVerificationPipeline:
                 detail=detail,
             )
         )
+        evidence: EvidenceBundle | None = None
+        receipt: LedgerReceipt | None = None
+        verification: VerificationResult | None = None
 
         try:
             scan = self._identity.scan(image)
@@ -93,14 +96,15 @@ class FaceVerificationPipeline:
                 "verified",
                 f"matched={verification.matched}, evidence_sha256={verification.evidence_sha256}",
             )
-
-            return PipelineRunResult(
-                run_id=run_id,
-                evidence=evidence,
-                receipt=receipt,
-                verification=verification,
-                events=events,
-            )
         except NoMatchFoundError as exc:
             emit("failed", str(exc))
-            return PipelineRunResult(run_id=run_id, events=events)
+        except LedgerUnavailableError as exc:
+            emit("failed", f"evidence not anchored: {exc}")
+
+        return PipelineRunResult(
+            run_id=run_id,
+            evidence=evidence,
+            receipt=receipt,
+            verification=verification,
+            events=events,
+        )
