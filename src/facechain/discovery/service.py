@@ -1,26 +1,9 @@
 """Discovery service orchestrator and canonical evidence assembly."""
 
-import hashlib
-import json
-
 from contracts.discovery import DiscoveryResult
 from contracts.domain import AuthorizedImage, EvidenceBundle, FaceScan
+from contracts.hashing import canonicalize_evidence, compute_evidence_hash
 from facechain.discovery.provider import DiscoveryProvider
-
-
-def canonicalize_evidence(evidence: EvidenceBundle) -> str:
-    """Serialize an EvidenceBundle into canonical UTF-8 JSON with sorted keys and compact separators.
-
-    Guarantees deterministic, reproducible byte representations across platforms.
-    """
-    data = evidence.model_dump(mode="json")
-    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def compute_evidence_hash(evidence: EvidenceBundle) -> str:
-    """Compute the deterministic SHA-256 lowercase hex fingerprint of canonical evidence JSON."""
-    canonical_bytes = canonicalize_evidence(evidence).encode("utf-8")
-    return hashlib.sha256(canonical_bytes).hexdigest().lower()
 
 
 class DiscoveryService:
