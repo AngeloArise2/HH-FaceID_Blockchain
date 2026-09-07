@@ -140,9 +140,12 @@ class AnvilWeb3Adapter:
             block = self._w3.eth.get_block(number, full_transactions=True)
             for raw_tx in block["transactions"]:
                 tx: Any = raw_tx
+                tx_input = tx["input"]
+                if isinstance(tx_input, bytes):
+                    tx_input = "0x" + tx_input.hex()
                 if (
                     str(tx["from"]).lower() == self._account.address.lower()
-                    and tx["input"].lower() == calldata.lower()
+                    and tx_input.lower() == calldata.lower()
                 ):
                     return LedgerReceipt(
                         evidence_sha256=evidence_sha256,

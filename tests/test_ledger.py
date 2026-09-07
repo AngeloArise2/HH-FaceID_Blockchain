@@ -202,6 +202,47 @@ def test_anvil_web3_adapter_conforms_to_protocol() -> None:
     assert isinstance(adapter, Web3Adapter)
 
 
+def test_anvil_web3_adapter_verify_matches_bytes_input() -> None:
+    adapter = AnvilWeb3Adapter(
+        rpc_url="http://127.0.0.1:8545",
+        private_key="0x" + "1" * 64,
+        chain_id=31337,
+    )
+    account = adapter._account  # type: ignore[attr-defined]  # real Account.from_key
+    digest = "a" * 64
+
+    class FakeTxHash:
+        def to_0x_hex(self) -> str:
+            return "0x" + "11" * 32
+
+    class FakeEth:
+        block_number = 1
+
+        def get_block(self, _number: int, full_transactions: bool = False) -> dict:
+            assert full_transactions is True
+            return {
+                "transactions": [
+                    {
+                        "from": account.address,
+                        "input": bytes.fromhex(digest),
+                        "hash": FakeTxHash(),
+                    }
+                ],
+                "timestamp": 1700000000,
+            }
+
+    class FakeW3:
+        eth = FakeEth()
+
+    adapter._w3 = FakeW3()  # type: ignore[attr-defined]
+
+    receipt = adapter.verify(digest)
+
+    assert receipt is not None
+    assert receipt.evidence_sha256 == digest
+    assert receipt.transaction_hash == "0x" + "11" * 32
+
+
 def test_web3_provider_anchors_successfully() -> None:
     fake = FakeWeb3Adapter(chain_id=31337)
     provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
