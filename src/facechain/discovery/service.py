@@ -1,5 +1,7 @@
 """Discovery service orchestrator and canonical evidence assembly."""
 
+from pydantic import HttpUrl
+
 from contracts.discovery import DiscoveryResult
 from contracts.domain import AuthorizedImage, EvidenceBundle, FaceScan
 from contracts.hashing import canonicalize_evidence, compute_evidence_hash
@@ -32,6 +34,10 @@ class DiscoveryService:
             DiscoveryUnavailableError: When provider communication fails.
         """
         return self._provider.search(image, scan)
+
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Fetch raw bytes for a remote match image via the provider."""
+        return self._provider.fetch_image(url)
 
     def assemble_evidence(
         self,

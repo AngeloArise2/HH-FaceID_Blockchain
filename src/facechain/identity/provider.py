@@ -59,6 +59,7 @@ class InsightFaceFaceScanner:
         self._ctx_id = ctx_id
         self._det_thresh = det_thresh
         self._det_size = det_size
+        self._embedding_cache: dict[str, np.ndarray] = {}
 
     @property
     def detector(self) -> str:
@@ -80,8 +81,38 @@ class InsightFaceFaceScanner:
             MultipleFacesDetectedError: When more than one face is detected.
             RecognitionUnavailableError: When the recognition engine fails.
         """
-        analyzer = self._ensure_analyzer()
         frame = self._read_image(Path(image.image_path))
+        embedding = self._cache_embedding(frame)
+        return FaceScan(
+            embedding_sha256=self._hash_embedding(embedding),
+            detector=self.detector,
+            face_count=1,
+            scanned_at=datetime.now(UTC),
+        )
+
+    def scan_bytes(self, data: bytes) -> FaceScan:
+        """Detect exactly one face in raw image bytes and emit a scan.
+
+        Used for remote match thumbnails fetched by the discovery module; the
+        candidate embedding is cached inside this scanner so that
+        ``similarity()`` can compare it against the source without any raw
+        vector leaving the identity module.
+        """
+        frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise InputValidationError("Unable to decode image bytes")
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        embedding = self._cache_embedding(frame)
+        return FaceScan(
+            embedding_sha256=self._hash_embedding(embedding),
+            detector=self.detector,
+            face_count=1,
+            scanned_at=datetime.now(UTC),
+        )
+
+    def _cache_embedding(self, frame: np.ndarray) -> np.ndarray:
+        """Detect one face, cache its normalized embedding by hash, and return it."""
+        analyzer = self._ensure_analyzer()
         try:
             faces = analyzer.get(frame)
         except IdentityError:
@@ -95,12 +126,27 @@ class InsightFaceFaceScanner:
                 f"Expected exactly one face, got {len(faces)}"
             )
         embedding = self._normalized_embedding(faces[0])
-        return FaceScan(
-            embedding_sha256=hashlib.sha256(embedding.tobytes()).hexdigest(),
-            detector=self.detector,
-            face_count=1,
-            scanned_at=datetime.now(UTC),
-        )
+        self._embedding_cache[self._hash_embedding(embedding)] = embedding
+        return embedding
+
+    @staticmethod
+    def _hash_embedding(embedding: np.ndarray) -> str:
+        return hashlib.sha256(embedding.tobytes()).hexdigest()
+
+    def similarity(self, source: FaceScan, candidate: FaceScan) -> float:
+        """Return cosine similarity in [0..1] between two cached face scans.
+
+        The normalized embeddings live only inside this scanner; callers
+        receive a single float and never the raw vectors.
+        """
+        source_vec = self._embedding_cache.get(source.embedding_sha256)
+        candidate_vec = self._embedding_cache.get(candidate.embedding_sha256)
+        if source_vec is None or candidate_vec is None:
+            raise RecognitionUnavailableError(
+                "Similarity requested for scans not produced by this scanner"
+            )
+        cosine = float(np.dot(source_vec, candidate_vec))
+        return min(1.0, max(0.0, cosine))
 
     def _ensure_analyzer(self) -> _AnalyzerLike:
         """Return an injected analyzer or lazily initialize the real model."""

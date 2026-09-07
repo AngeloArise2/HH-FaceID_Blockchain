@@ -3,6 +3,7 @@
 import hashlib
 import sys
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 
 import cv2
@@ -366,3 +367,60 @@ def test_service_unreadable_file(tmp_path: Path) -> None:
     service = IdentityService(InsightFaceFaceScanner(analyzer=FakeAnalyzer([])))
     with pytest.raises(InputValidationError):
         service.scan(image)
+
+
+def test_scan_bytes_decodes_and_hashes_raw_images(tmp_path: Path) -> None:
+    raw = np.array([0.0, 1.0], dtype=np.float32)
+    expected = hashlib.sha256(
+        np.ascontiguousarray(raw / np.linalg.norm(raw), dtype=np.float32).tobytes()
+    ).hexdigest()
+    scanner = InsightFaceFaceScanner(
+        analyzer=FakeAnalyzer([FakeFace(embedding=raw)])
+    )
+    image_bytes = make_real_image(tmp_path).read_bytes()
+    scan = scanner.scan_bytes(image_bytes)
+    assert scan.embedding_sha256 == expected
+    assert scan.face_count == 1
+
+
+def test_scan_bytes_invalid_bytes_raises() -> None:
+    scanner = InsightFaceFaceScanner(analyzer=FakeAnalyzer([]))
+    with pytest.raises(InputValidationError):
+        scanner.scan_bytes(b"not-an-image")
+
+
+def test_scan_bytes_no_face_raises(tmp_path: Path) -> None:
+    scanner = InsightFaceFaceScanner(analyzer=FakeAnalyzer([]))
+    with pytest.raises(NoFaceDetectedError):
+        scanner.scan_bytes(make_real_image(tmp_path).read_bytes())
+
+
+def test_similarity_compares_cached_embedding_for_same_subject(tmp_path: Path) -> None:
+    raw = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    scanner = InsightFaceFaceScanner(analyzer=FakeAnalyzer([FakeFace(embedding=raw)]))
+    a = scanner.scan_bytes(make_real_image(tmp_path).read_bytes())
+    b = scanner.scan_bytes(make_real_image(tmp_path).read_bytes())
+    # identical normalized embeddings → cosine similarity 1.0
+    assert scanner.similarity(a, b) == pytest.approx(1.0)
+
+
+def test_similarity_raises_for_foreign_scan() -> None:
+    raw = np.array([1.0, 0.0], dtype=np.float32)
+    scanner = InsightFaceFaceScanner(analyzer=FakeAnalyzer([FakeFace(embedding=raw)]))
+    foreign = FaceScan(
+        embedding_sha256="f" * 64,
+        detector="other",
+        face_count=1,
+        scanned_at=datetime.now(UTC),
+    )
+    with pytest.raises(RecognitionUnavailableError):
+        scanner.similarity(foreign, foreign)
+
+
+def test_scan_caches_embedding_for_similarity(tmp_path: Path) -> None:
+    raw = np.array([0.0, 1.0], dtype=np.float32)
+    scanner = InsightFaceFaceScanner(analyzer=FakeAnalyzer([FakeFace(embedding=raw)]))
+    image_bytes = make_real_image(tmp_path).read_bytes()
+    image_scan = scanner.scan(make_authorized(tmp_path))
+    candidate_scan = scanner.scan_bytes(image_bytes)
+    assert scanner.similarity(image_scan, candidate_scan) == pytest.approx(1.0)

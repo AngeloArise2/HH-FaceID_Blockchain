@@ -40,6 +40,20 @@ class DiscoveryProvider(Protocol):
         """
         ...
 
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Fetch the raw bytes of a remote match image.
+
+        Args:
+            url: HTTP(S) URL of the image (e.g. a match thumbnail).
+
+        Returns:
+            Raw image bytes for face comparison.
+
+        Raises:
+            DiscoveryUnavailableError: When the remote image cannot be fetched.
+        """
+        ...
+
 
 class FakeDiscoveryProvider:
     """Deterministic fake provider for testing and offline runs."""
@@ -48,10 +62,15 @@ class FakeDiscoveryProvider:
         self,
         canned_result: DiscoveryResult | None = None,
         raise_error: Exception | None = None,
+        raise_fetch_error: Exception | None = None,
+        canned_image_bytes: bytes = b"fake-thumbnail-bytes",
     ) -> None:
         self.canned_result = canned_result
         self.raise_error = raise_error
+        self.raise_fetch_error = raise_fetch_error
+        self.canned_image_bytes = canned_image_bytes
         self.recorded_calls: list[tuple[AuthorizedImage, FaceScan]] = []
+        self.fetched_urls: list[str] = []
 
     def search(self, image: AuthorizedImage, scan: FaceScan) -> DiscoveryResult:
         """Execute fake search returning canned response or raising specified error."""
@@ -61,6 +80,13 @@ class FakeDiscoveryProvider:
         if self.canned_result is not None:
             return self.canned_result
         raise NoMatchFoundError("No qualifying public match found by fake provider.")
+
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Return canned image bytes for the given URL, or raise if configured."""
+        if self.raise_fetch_error is not None:
+            raise self.raise_fetch_error
+        self.fetched_urls.append(str(url))
+        return self.canned_image_bytes
 
 
 class SerpAPILensProvider:
@@ -90,6 +116,21 @@ class SerpAPILensProvider:
         if self._client is not None:
             return self._client
         return httpx.Client(timeout=self.timeout)
+
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Fetch the raw bytes of a remote match image."""
+        try:
+            resp = self._get_client().get(str(url), timeout=self.timeout)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise DiscoveryUnavailableError(
+                f"Failed to fetch image {url}: HTTP {exc.response.status_code}"
+            ) from exc
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise DiscoveryUnavailableError(
+                f"Failed to fetch image {url}: {exc}"
+            ) from exc
+        return resp.content
 
     def _request_with_retry(
         self,

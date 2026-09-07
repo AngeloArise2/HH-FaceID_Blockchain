@@ -537,3 +537,136 @@ def test_cli_verify_missing_evidence_exits_one(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "cannot read evidence file" in result.output
+
+
+def test_score_matches_fill_confidence_from_identity_similarity(tmp_path: Path) -> None:
+    """When a match has image_url, pipeline fetches + scans + fills confidence."""
+    from pydantic import HttpUrl
+
+    from facechain.discovery.provider import FakeDiscoveryProvider
+    from facechain.identity.service import FakeFaceScanner, IdentityService
+
+    provider = FakeDiscoveryProvider(
+        canned_result=DiscoveryResult(
+            provider="fake_lens",
+            matched_post=_post(),
+            matches=[
+                DiscoveryMatch(
+                    post=PublicPost(
+                        source_url="https://x.example/user/1",
+                        platform="XProfile",
+                        retrieved_at=datetime.now(UTC),
+                        image_url=HttpUrl("https://cdn.example.com/thumb.jpg"),
+                    ),
+                    confidence=None,
+                ),
+                DiscoveryMatch(
+                    post=PublicPost(
+                        source_url="https://ig.example/u/2",
+                        platform="InstagramProfile",
+                        retrieved_at=datetime.now(UTC),
+                        image_url=None,
+                    ),
+                    confidence=None,
+                ),
+            ],
+        ),
+        canned_image_bytes=b"fake-thumbnail-bytes",
+    )
+    scanner = FakeFaceScanner()
+    pipeline = FaceVerificationPipeline(
+        identity=IdentityService(scanner),
+        discovery=DiscoveryService(provider),
+        ledger=StubLedger(),
+    )
+    path = tmp_path / "input.jpg"
+    path.write_bytes(b"input-bytes")
+    result = pipeline.run(_make_image(path))
+
+    assert result.verification is not None
+    assert len(result.matches) == 2
+    # match with image_url → confidence filled from similarity
+    assert result.matches[0].confidence == 0.87
+    # match without image_url → confidence preserved as None
+    assert result.matches[1].confidence is None
+
+
+def test_score_matches_keeps_provider_confidence_on_fetch_failure(tmp_path: Path) -> None:
+    """When fetch_image raises, provider's original confidence is preserved."""
+    from pydantic import HttpUrl
+
+    from facechain.discovery.exceptions import DiscoveryUnavailableError
+    from facechain.discovery.provider import FakeDiscoveryProvider
+    from facechain.identity.service import FakeFaceScanner, IdentityService
+
+    provider = FakeDiscoveryProvider(
+        canned_result=DiscoveryResult(
+            provider="fake_lens",
+            matched_post=_post(),
+            matches=[
+                DiscoveryMatch(
+                    post=PublicPost(
+                        source_url="https://x.example/user/1",
+                        platform="XProfile",
+                        retrieved_at=datetime.now(UTC),
+                        image_url=HttpUrl("https://cdn.example.com/thumb.jpg"),
+                    ),
+                    confidence=0.75,
+                ),
+            ],
+        ),
+        raise_fetch_error=DiscoveryUnavailableError("timeout"),
+    )
+    scanner = FakeFaceScanner()
+    pipeline = FaceVerificationPipeline(
+        identity=IdentityService(scanner),
+        discovery=DiscoveryService(provider),
+        ledger=StubLedger(),
+    )
+    path = tmp_path / "input.jpg"
+    path.write_bytes(b"input-bytes")
+    result = pipeline.run(_make_image(path))
+
+    # fetch failed → original provider confidence preserved
+    assert result.matches[0].confidence == 0.75
+
+
+def test_score_matches_no_face_in_thumbnail_keeps_provider_confidence(
+    tmp_path: Path,
+) -> None:
+    """When thumbnail has no face, provider's original confidence is preserved."""
+    from pydantic import HttpUrl
+
+    from facechain.discovery.provider import FakeDiscoveryProvider
+    from facechain.identity.service import FakeFaceScanner, IdentityService
+
+    provider = FakeDiscoveryProvider(
+        canned_result=DiscoveryResult(
+            provider="fake_lens",
+            matched_post=_post(),
+            matches=[
+                DiscoveryMatch(
+                    post=PublicPost(
+                        source_url="https://x.example/user/1",
+                        platform="XProfile",
+                        retrieved_at=datetime.now(UTC),
+                        image_url=HttpUrl("https://cdn.example.com/thumb.jpg"),
+                    ),
+                    confidence=0.80,
+                ),
+            ],
+        ),
+        canned_image_bytes=b"no-face",
+    )
+    scanner = FakeFaceScanner(fail_scan_bytes=True)
+    pipeline = FaceVerificationPipeline(
+        identity=IdentityService(scanner),
+        discovery=DiscoveryService(provider),
+        ledger=StubLedger(),
+    )
+    path = tmp_path / "input.jpg"
+    path.write_bytes(b"input-bytes")
+    result = pipeline.run(_make_image(path))
+
+    # scan_bytes raised NoFaceDetectedError → original provider confidence preserved
+    assert result.matches[0].confidence == 0.80

@@ -9,11 +9,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from contracts.domain import AuthorizedImage, EvidenceBundle
+from contracts.discovery import DiscoveryMatch
+from contracts.domain import AuthorizedImage, EvidenceBundle, FaceScan
 from contracts.events import PipelineEvent
 from contracts.ledger import LedgerReceipt, VerificationResult
-from facechain.discovery import DiscoveryService, NoMatchFoundError
-from facechain.identity import IdentityService
+from facechain.discovery import DiscoveryService, DiscoveryUnavailableError, NoMatchFoundError
+from facechain.identity import (
+    IdentityService,
+    InputValidationError,
+    MultipleFacesDetectedError,
+    NoFaceDetectedError,
+    RecognitionUnavailableError,
+)
 from facechain.ledger import EvidenceLedger, LedgerUnavailableError
 
 EventStage = Literal["validated", "face_scanned", "post_found", "anchored", "verified", "failed"]
@@ -24,6 +31,7 @@ class PipelineRunResult(BaseModel):
 
     run_id: str
     evidence: EvidenceBundle | None = None
+    matches: list[DiscoveryMatch] = Field(default_factory=list)
     receipt: LedgerReceipt | None = None
     verification: VerificationResult | None = None
     events: list[PipelineEvent] = Field(default_factory=list)
@@ -64,6 +72,7 @@ class FaceVerificationPipeline:
             )
         )
         evidence: EvidenceBundle | None = None
+        matches: list[DiscoveryMatch] = []
         receipt: LedgerReceipt | None = None
         verification: VerificationResult | None = None
 
@@ -79,9 +88,10 @@ class FaceVerificationPipeline:
             )
 
             result = self._discovery.discover(image, scan)
+            matches = self._score_matches(scan, result.matches)
             emit(
                 "post_found",
-                f"provider={result.provider}, source={result.matched_post.source_url}",
+                f"provider={result.provider}, source={result.matched_post.source_url}, platforms={len(matches)}",
             )
 
             evidence = self._discovery.assemble_evidence(result, image, scan)
@@ -104,7 +114,44 @@ class FaceVerificationPipeline:
         return PipelineRunResult(
             run_id=run_id,
             evidence=evidence,
+            matches=matches,
             receipt=receipt,
             verification=verification,
             events=events,
         )
+
+    def _score_matches(
+        self,
+        source_scan: FaceScan,
+        candidate_matches: list[DiscoveryMatch],
+    ) -> list[DiscoveryMatch]:
+        """Fill each match's confidence with a real face-similarity score.
+
+        When a match has an image URL the thumbnail is fetched, scanned, and
+        compared against the source scan.  Raw embeddings stay inside the
+        identity module; only a 0..1 score is recorded.  Any per-thumbnail
+        failure (unreachable image, no face, multiple faces, recognition
+        hiccup) leaves the provider's original confidence intact rather than
+        failing the run.  When no image URL is available the provider's
+        confidence is preserved as-is.
+        """
+        scored: list[DiscoveryMatch] = []
+        for match in candidate_matches:
+            confidence = match.confidence
+            image_url = match.post.image_url
+            if image_url is not None:
+                try:
+                    thumbnail = self._discovery.fetch_image(image_url)
+                    candidate_scan = self._identity.scan_bytes(thumbnail)
+                    confidence = self._identity.similarity(source_scan, candidate_scan)
+                except (
+                    DiscoveryUnavailableError,
+                    InputValidationError,
+                    NoFaceDetectedError,
+                    MultipleFacesDetectedError,
+                    RecognitionUnavailableError,
+                    OSError,
+                ):
+                    confidence = match.confidence
+            scored.append(match.model_copy(update={"confidence": confidence}))
+        return scored
