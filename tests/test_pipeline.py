@@ -1,4 +1,4 @@
-"""Integration tests for settings and the verification pipeline."""
+"""Integration tests for settings, the verification pipeline, and the CLI."""
 
 import hashlib
 from datetime import UTC, datetime
@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 from pydantic import HttpUrl, ValidationError
+from typer.testing import CliRunner
 
 from contracts.discovery import DiscoveryResult
 from contracts.domain import AuthorizedImage, EvidenceBundle, PublicPost
 from contracts.hashing import compute_evidence_hash
 from contracts.ledger import LedgerReceipt, VerificationResult
+from facechain import cli
 from facechain.config import Settings, SettingsValidationError
 from facechain.discovery import (
     DiscoveryService,
@@ -78,8 +80,9 @@ def test_settings_rejects_unknown_discovery_mode() -> None:
 class StubLedger:
     """Fake EvidenceLedger; anchors into an in-memory store and verifies against it."""
 
-    def __init__(self, *, report_mismatch: bool = False) -> None:
+    def __init__(self, *, report_mismatch: bool = False, always_match: bool = False) -> None:
         self._report_mismatch = report_mismatch
+        self._always_match = always_match
         self._store: dict[str, LedgerReceipt] = {}
 
     def anchor(self, evidence: EvidenceBundle) -> LedgerReceipt:
@@ -95,6 +98,8 @@ class StubLedger:
 
     def verify(self, evidence: EvidenceBundle) -> VerificationResult:
         digest = compute_evidence_hash(evidence)
+        if self._always_match:
+            return VerificationResult(matched=True, evidence_sha256=digest)
         if self._report_mismatch:
             return VerificationResult(matched=False, evidence_sha256=digest)
         receipt = self._store.get(digest)
@@ -216,3 +221,159 @@ def test_failed_event_detail_includes_reason(tmp_path: Path) -> None:
     assert failed_event.stage == "failed"
     assert isinstance(failed_event.detail, str)
     assert len(failed_event.detail) > 0
+
+
+# ── CLI integration ────────────────────────────────────────────────────────
+
+
+_cli_runner = CliRunner()
+
+
+def _stub_build_pipeline() -> FaceVerificationPipeline:
+    return FaceVerificationPipeline(
+        identity=IdentityService(FakeFaceScanner("b" * 64)),
+        discovery=DiscoveryService(FakeDiscoveryProvider(canned_result=_discovery_result())),
+        ledger=StubLedger(),
+    )
+
+
+def _stub_no_match_pipeline() -> FaceVerificationPipeline:
+    return FaceVerificationPipeline(
+        identity=IdentityService(FakeFaceScanner("b" * 64)),
+        discovery=DiscoveryService(FakeDiscoveryProvider()),
+        ledger=StubLedger(),
+    )
+
+
+def test_cli_help_lists_commands() -> None:
+    result = _cli_runner.invoke(cli.app, ["--help"])
+    assert result.exit_code == 0
+    assert "run" in result.output
+    assert "verify" in result.output
+
+
+def test_cli_run_success_prints_events_and_writes_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_build_pipeline", _stub_build_pipeline)
+    image_path = tmp_path / "input.jpg"
+    image_path.write_bytes(b"sample-image-bytes")
+
+    result = _cli_runner.invoke(
+        cli.app, ["run", "--image", str(image_path), "--runs-dir", str(tmp_path / "runs")]
+    )
+
+    assert result.exit_code == 0
+    for stage in ("validated", "face_scanned", "post_found", "anchored", "verified"):
+        assert f"[{stage}]" in result.output
+    run_dirs = list((tmp_path / "runs").iterdir())
+    assert len(run_dirs) == 1
+    evidence_file = run_dirs[0] / "evidence.json"
+    assert evidence_file.exists()
+    EvidenceBundle.model_validate_json(evidence_file.read_text())
+
+
+def test_cli_run_no_match_exits_six(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_build_pipeline", _stub_no_match_pipeline)
+    image_path = tmp_path / "input.jpg"
+    image_path.write_bytes(b"sample-image-bytes")
+
+    result = _cli_runner.invoke(cli.app, ["run", "--image", str(image_path)])
+
+    assert result.exit_code == 6
+    assert "[failed]" in result.output
+
+
+def test_cli_run_missing_image_exits_one(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.jpg"
+
+    result = _cli_runner.invoke(cli.app, ["run", "--image", str(missing)])
+
+    assert result.exit_code == 1
+    assert "cannot read image" in result.output
+
+
+def test_cli_run_surfaces_documented_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _no_face_pipeline() -> FaceVerificationPipeline:
+        return FaceVerificationPipeline(
+            identity=IdentityService(FakeFaceScanner("b" * 64, fail=True)),
+            discovery=DiscoveryService(FakeDiscoveryProvider(canned_result=_discovery_result())),
+            ledger=StubLedger(),
+        )
+
+    monkeypatch.setattr(cli, "_build_pipeline", _no_face_pipeline)
+    image_path = tmp_path / "input.jpg"
+    image_path.write_bytes(b"sample-image-bytes")
+
+    result = _cli_runner.invoke(cli.app, ["run", "--image", str(image_path)])
+
+    assert result.exit_code == 3
+    assert "no face detected" in result.output
+
+
+def test_cli_verify_matched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _matched_pipeline() -> FaceVerificationPipeline:
+        return FaceVerificationPipeline(
+            identity=IdentityService(FakeFaceScanner("b" * 64)),
+            discovery=DiscoveryService(FakeDiscoveryProvider(canned_result=_discovery_result())),
+            ledger=StubLedger(always_match=True),
+        )
+
+    monkeypatch.setattr(cli, "_build_pipeline", _matched_pipeline)
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        EvidenceBundle(
+            consent_reference="consent-ref-12345",
+            input_image_sha256="b" * 64,
+            face_embedding_sha256="c" * 64,
+            provider="fake_lens",
+            post=_post(),
+        ).model_dump_json()
+    )
+
+    result = _cli_runner.invoke(cli.app, ["verify", "--evidence", str(evidence_path)])
+
+    assert result.exit_code == 0
+    assert "Verified: matched" in result.output
+
+
+def test_cli_verify_unmatched_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _mismatched_pipeline() -> FaceVerificationPipeline:
+        return FaceVerificationPipeline(
+            identity=IdentityService(FakeFaceScanner("b" * 64)),
+            discovery=DiscoveryService(FakeDiscoveryProvider(canned_result=_discovery_result())),
+            ledger=StubLedger(report_mismatch=True),
+        )
+
+    monkeypatch.setattr(cli, "_build_pipeline", _mismatched_pipeline)
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        EvidenceBundle(
+            consent_reference="consent-ref-12345",
+            input_image_sha256="b" * 64,
+            face_embedding_sha256="c" * 64,
+            provider="fake_lens",
+            post=_post(),
+        ).model_dump_json()
+    )
+
+    result = _cli_runner.invoke(cli.app, ["verify", "--evidence", str(evidence_path)])
+
+    assert result.exit_code == 1
+    assert "Not matched" in result.output
+
+
+def test_cli_verify_missing_evidence_exits_one(tmp_path: Path) -> None:
+    result = _cli_runner.invoke(
+        cli.app, ["verify", "--evidence", str(tmp_path / "missing.json")]
+    )
+    assert result.exit_code == 1
+    assert "cannot read evidence file" in result.output

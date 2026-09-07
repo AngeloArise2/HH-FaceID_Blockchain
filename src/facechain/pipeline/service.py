@@ -55,6 +55,10 @@ class FaceVerificationPipeline:
         self._discovery = discovery
         self._ledger = ledger
 
+    def verify_bundle(self, evidence: EvidenceBundle) -> VerificationResult:
+        """Verify an existing evidence bundle against the ledger."""
+        return self._ledger.verify(evidence)
+
     def run(self, image: AuthorizedImage) -> PipelineRunResult:
         """Execute one consented verification run and emit pipeline events."""
         run_id = uuid4().hex
