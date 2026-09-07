@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from eth_account import Account
 from web3 import Web3
@@ -39,6 +39,20 @@ class Web3Adapter(Protocol):
 
         Raises:
             LedgerUnavailableError: When submission fails or the receipt indicates failure.
+        """
+        ...
+
+    def verify(self, evidence_sha256: str) -> LedgerReceipt | None:
+        """Return the on-chain receipt for a fingerprint, or None if not anchored.
+
+        Args:
+            evidence_sha256: Canonical SHA-256 fingerprint of the evidence bundle.
+
+        Returns:
+            The anchored receipt if an identical fingerprint exists on-chain, otherwise None.
+
+        Raises:
+            LedgerUnavailableError: When the chain provider is unreachable or fails.
         """
         ...
 
@@ -114,6 +128,30 @@ class AnvilWeb3Adapter:
         anchored_at = datetime.fromtimestamp(int(block["timestamp"]), tz=UTC)
         return tx_hash.to_0x_hex(), anchored_at
 
+    def verify(self, evidence_sha256: str) -> LedgerReceipt | None:
+        """Return the on-chain receipt for a fingerprint, or None if not anchored.
+
+        On Anvil the anchor is a self-transfer whose calldata equals the fingerprint,
+        so re-verification scans blocks for that exact calldata from our account.
+        """
+        calldata = f"0x{evidence_sha256}"
+        block_number = int(self._w3.eth.block_number)
+        for number in range(block_number + 1):
+            block = self._w3.eth.get_block(number, full_transactions=True)
+            for raw_tx in block["transactions"]:
+                tx: Any = raw_tx
+                if (
+                    str(tx["from"]).lower() == self._account.address.lower()
+                    and tx["input"].lower() == calldata.lower()
+                ):
+                    return LedgerReceipt(
+                        evidence_sha256=evidence_sha256,
+                        chain_id=self._chain_id,
+                        transaction_hash=tx["hash"].to_0x_hex(),
+                        anchored_at=datetime.fromtimestamp(int(block["timestamp"]), tz=UTC),
+                    )
+        return None
+
 
 class Web3LedgerProvider:
     """Ledger provider that anchors evidence fingerprints on Anvil via an injected web3 adapter."""
@@ -163,8 +201,15 @@ class Web3LedgerProvider:
         )
 
     def verify(self, evidence_sha256: str) -> LedgerReceipt | None:
-        """Re-verification of an anchored fingerprint (implemented in Ledger Phase 3)."""
-        raise NotImplementedError("On-chain re-verification is implemented in Ledger Phase 3.")
+        """Re-verify a fingerprint against the chain and return its receipt if present."""
+        self._ensure_chain()
+        try:
+            receipt = self._adapter.verify(evidence_sha256)
+        except LedgerUnavailableError:
+            raise
+        except Exception as exc:
+            raise self._guard(exc) from exc
+        return receipt
 
 
 class FakeLedgerProvider:

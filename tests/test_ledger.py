@@ -144,12 +144,15 @@ class FakeWeb3Adapter:
         chain_id: int = 31337,
         chain_id_error: Exception | None = None,
         anchor_error: Exception | None = None,
+        verify_error: Exception | None = None,
     ) -> None:
         self._chain_id = chain_id
         self._chain_id_error = chain_id_error
         self._anchor_error = anchor_error
+        self._verify_error = verify_error
         self.last_anchored_sha256: str | None = None
         self.anchored_at = datetime(2026, 1, 1, tzinfo=UTC)
+        self._receipts: dict[str, LedgerReceipt] = {}
 
     def chain_id(self) -> int:
         if self._chain_id_error is not None:
@@ -160,7 +163,26 @@ class FakeWeb3Adapter:
         if self._anchor_error is not None:
             raise self._anchor_error
         self.last_anchored_sha256 = evidence_sha256
+        self._receipts[evidence_sha256] = LedgerReceipt(
+            evidence_sha256=evidence_sha256,
+            chain_id=self._chain_id,
+            transaction_hash="0x" + "1" * 64,
+            anchored_at=self.anchored_at,
+        )
         return "0x" + "1" * 64, self.anchored_at
+
+    def verify(self, evidence_sha256: str) -> LedgerReceipt | None:
+        if self._verify_error is not None:
+            raise self._verify_error
+        return self._receipts.get(evidence_sha256)
+
+    def record_anchor(self, evidence_sha256: str) -> None:
+        self._receipts[evidence_sha256] = LedgerReceipt(
+            evidence_sha256=evidence_sha256,
+            chain_id=self._chain_id,
+            transaction_hash="0x" + "1" * 64,
+            anchored_at=self.anchored_at,
+        )
 
 
 def _web3_settings(*, chain_id: int = 31337) -> Settings:
@@ -237,3 +259,78 @@ def test_settings_load_anvil_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.anvil_rpc_url == "http://127.0.0.1:8545"
     assert settings.chain_id == 31337
     assert settings.anvil_private_key == "0x" + "2" * 64
+
+
+def test_web3_provider_verify_returns_receipt_when_anchored() -> None:
+    fake = FakeWeb3Adapter(chain_id=31337)
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+    fake.record_anchor("a" * 64)
+
+    receipt = provider.verify("a" * 64)
+
+    assert isinstance(receipt, LedgerReceipt)
+    assert receipt.evidence_sha256 == "a" * 64
+    assert receipt.chain_id == 31337
+    assert receipt.transaction_hash == "0x" + "1" * 64
+
+
+def test_web3_provider_verify_returns_none_for_unmatched() -> None:
+    fake = FakeWeb3Adapter(chain_id=31337)
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+    fake.record_anchor("a" * 64)
+
+    assert provider.verify("b" * 64) is None
+
+
+def test_web3_provider_verify_never_converts_mismatch_to_exception() -> None:
+    fake = FakeWeb3Adapter(chain_id=31337)
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+    bundle = _sample_bundle()
+    digest = compute_evidence_hash(bundle)
+
+    fake.record_anchor(digest)
+    receipt = provider.verify(digest)
+
+    assert isinstance(receipt, LedgerReceipt)
+
+    altered = bundle.model_copy(update={"provider": "different_provider"})
+    missing = provider.verify(compute_evidence_hash(altered))
+
+    assert missing is None
+
+
+def test_ledger_service_verify_altered_evidence_matched_false() -> None:
+    fake = FakeWeb3Adapter(chain_id=31337)
+    ledger = EvidenceLedger(provider=Web3LedgerProvider(settings=_web3_settings(), adapter=fake))
+    bundle = _sample_bundle()
+
+    receipt = ledger.anchor(bundle)
+    assert isinstance(receipt, LedgerReceipt)
+
+    result = ledger.verify(bundle)
+    assert isinstance(result, VerificationResult)
+    assert result.matched is True
+    assert result.receipt == receipt
+
+    altered = bundle.model_copy(update={"provider": "different_provider"})
+    altered_result = ledger.verify(altered)
+
+    assert altered_result.matched is False
+    assert altered_result.evidence_sha256 == compute_evidence_hash(altered)
+    assert altered_result.receipt is None
+
+
+def test_web3_provider_verify_raises_typed_error_on_unreachable_chain() -> None:
+    fake = FakeWeb3Adapter(chain_id_error=ConnectionError("connection refused"))
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+
+    with pytest.raises(LedgerUnavailableError):
+        provider.verify("a" * 64)
+
+
+def test_ledger_service_surfaces_unreachable_error_on_verify() -> None:
+    fake = FakeWeb3Adapter(chain_id_error=ConnectionError("connection refused"))
+    ledger = EvidenceLedger(provider=Web3LedgerProvider(settings=_web3_settings(), adapter=fake))
+
+    with pytest.raises(LedgerUnavailableError):
+        ledger.verify(_sample_bundle())
