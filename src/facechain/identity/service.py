@@ -66,6 +66,17 @@ class IdentityService:
         self.validate_image(image)
         return self._scanner.scan(image)
 
+    def scan_bytes(self, data: bytes) -> FaceScan:
+        """Scan raw image bytes (e.g. a match thumbnail) into a FaceScan."""
+        return self._scanner.scan_bytes(data)
+
+    def similarity(self, source: FaceScan, candidate: FaceScan) -> float:
+        """Return cosine similarity in [0..1] between a source and a candidate scan.
+
+        Raw embeddings stay inside the identity module; only the score is returned.
+        """
+        return self._scanner.similarity(source, candidate)
+
 
 class FakeFaceScanner:
     """Deterministic face scanner for tests. No network calls."""
@@ -76,17 +87,24 @@ class FakeFaceScanner:
         detector: str = "fake",
         *,
         fail: bool = False,
+        fail_scan_bytes: bool = False,
     ) -> None:
         self._embedding = embedding_sha256 or (
             hashlib.sha256(b"fake-embedding").hexdigest()
         )
         self._detector = detector
         self._fail = fail
+        self._fail_scan_bytes = fail_scan_bytes
         self._call_count = 0
+        self._similarity = 0.87
 
     @property
     def call_count(self) -> int:
         return self._call_count
+
+    @property
+    def similarity_value(self) -> float:
+        return self._similarity
 
     def scan(self, image: AuthorizedImage) -> FaceScan:
         """Return a deterministic FaceScan for the given image.
@@ -103,6 +121,30 @@ class FakeFaceScanner:
         self._call_count += 1
         if self._fail:
             raise NoFaceDetectedError("No face detected in the input image")
+        return self._make_scan()
+
+    def scan_bytes(self, data: bytes) -> FaceScan:
+        """Return a deterministic FaceScan from raw bytes.
+
+        Raises:
+            InputValidationError: When the bytes are empty or have no face.
+        """
+        self._call_count += 1
+        if self._fail or self._fail_scan_bytes or not data:
+            raise NoFaceDetectedError("No face detected in the input image")
+        derived = hashlib.sha256(data).hexdigest()
+        return FaceScan(
+            embedding_sha256=derived,
+            detector=self._detector,
+            face_count=1,
+            scanned_at=datetime.now(UTC),
+        )
+
+    def similarity(self, source: FaceScan, candidate: FaceScan) -> float:
+        """Return a deterministic similarity score."""
+        return self._similarity
+
+    def _make_scan(self) -> FaceScan:
         return FaceScan(
             embedding_sha256=self._embedding,
             detector=self._detector,

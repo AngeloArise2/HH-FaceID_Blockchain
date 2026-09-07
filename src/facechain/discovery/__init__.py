@@ -1,5 +1,6 @@
 """Discovery module boundary."""
 
+from contracts.hashing import canonicalize_evidence, compute_evidence_hash
 from facechain.discovery.exceptions import (
     DiscoveryConfigError,
     DiscoveryError,
@@ -13,8 +14,6 @@ from facechain.discovery.provider import (
 )
 from facechain.discovery.service import (
     DiscoveryService,
-    canonicalize_evidence,
-    compute_evidence_hash,
 )
 
 __all__ = [

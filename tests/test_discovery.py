@@ -645,3 +645,92 @@ def test_service_canonicalize_and_fingerprint_delegation(
     assert service.canonicalize(bundle) == canonicalize_evidence(bundle)
     assert service.fingerprint(bundle) == compute_evidence_hash(bundle)
 
+
+@respx.mock
+def test_serpapi_multiple_platforms_deduplicated_and_primary_first(
+    sample_face_scan: FaceScan,
+) -> None:
+    respx.get("https://serpapi.com/search.json").respond(
+        status_code=200,
+        json={
+            "visual_matches": [
+                {
+                    "title": "News Feature",
+                    "link": "https://news.example.org/article/42",
+                    "source": "NewsOutlet",
+                },
+                {
+                    "title": "Twin Post on Same Platform",
+                    "link": "https://news.example.org/article/99",
+                    "source": "NewsOutlet",
+                },
+                {
+                    "title": "Social Profile",
+                    "link": "https://x.example/user/1",
+                    "source": "XProfile",
+                    "snippet": "Short bio.",
+                },
+                {
+                    "title": "Photo Page",
+                    "link": "https://ig.example/u/2",
+                    "source": "InstagramProfile",
+                },
+                {"title": "No Http Link", "link": "ftp://invalid"},
+            ]
+        },
+    )
+    image = AuthorizedImage(
+        image_path="https://example.com/subject.jpg",
+        sha256="c" * 64,
+        consent_reference="consent-multi-123",
+    )
+
+    provider = SerpAPILensProvider(api_key="key")
+    result = provider.search(image, sample_face_scan)
+
+    assert [m.post.platform for m in result.matches] == [
+        "NewsOutlet",
+        "XProfile",
+        "InstagramProfile",
+    ]
+    assert result.matched_post.source_url == HttpUrl("https://news.example.org/article/42")
+    assert result.matched_post == result.matches[0].post
+    assert all(m.confidence is None for m in result.matches)
+
+
+@respx.mock
+def test_serpapi_fetch_image_returns_raw_bytes() -> None:
+    respx.get("https://cdn.example.com/thumb.jpg").respond(
+        status_code=200,
+        content=b"\x89PNG-fake-image-bytes",
+    )
+    provider = SerpAPILensProvider(api_key="key")
+    data = provider.fetch_image(HttpUrl("https://cdn.example.com/thumb.jpg"))
+    assert data == b"\x89PNG-fake-image-bytes"
+
+
+@respx.mock
+def test_serpapi_fetch_image_http_error_raises_unavailable() -> None:
+    respx.get("https://cdn.example.com/missing.jpg").respond(status_code=404)
+    provider = SerpAPILensProvider(api_key="key")
+    with pytest.raises(DiscoveryUnavailableError):
+        provider.fetch_image(HttpUrl("https://cdn.example.com/missing.jpg"))
+
+
+@respx.mock
+def test_serpapi_fetch_image_timeout_raises_unavailable() -> None:
+    respx.get("https://cdn.example.com/slow.jpg").mock(
+        side_effect=httpx.TimeoutException("timed out")
+    )
+    provider = SerpAPILensProvider(api_key="key")
+    with pytest.raises(DiscoveryUnavailableError):
+        provider.fetch_image(HttpUrl("https://cdn.example.com/slow.jpg"))
+
+
+def test_discovery_service_fetch_image_delegates_to_provider(sample_face_scan: FaceScan) -> None:
+    fake = FakeDiscoveryProvider(canned_image_bytes=b"thumbnail-bytes")
+    service = DiscoveryService(fake)
+    data = service.fetch_image(HttpUrl("https://cdn.example.com/thumb.jpg"))
+    assert data == b"thumbnail-bytes"
+    assert fake.fetched_urls == ["https://cdn.example.com/thumb.jpg"]
+

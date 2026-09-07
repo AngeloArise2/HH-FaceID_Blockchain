@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import HttpUrl, ValidationError
 
-from contracts.discovery import DiscoveryResult
+from contracts.discovery import DiscoveryMatch, DiscoveryResult
 from contracts.domain import AuthorizedImage, FaceScan, PublicPost
 from facechain.discovery.exceptions import (
     DiscoveryConfigError,
@@ -40,6 +40,20 @@ class DiscoveryProvider(Protocol):
         """
         ...
 
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Fetch the raw bytes of a remote match image.
+
+        Args:
+            url: HTTP(S) URL of the image (e.g. a match thumbnail).
+
+        Returns:
+            Raw image bytes for face comparison.
+
+        Raises:
+            DiscoveryUnavailableError: When the remote image cannot be fetched.
+        """
+        ...
+
 
 class FakeDiscoveryProvider:
     """Deterministic fake provider for testing and offline runs."""
@@ -48,10 +62,15 @@ class FakeDiscoveryProvider:
         self,
         canned_result: DiscoveryResult | None = None,
         raise_error: Exception | None = None,
+        raise_fetch_error: Exception | None = None,
+        canned_image_bytes: bytes = b"fake-thumbnail-bytes",
     ) -> None:
         self.canned_result = canned_result
         self.raise_error = raise_error
+        self.raise_fetch_error = raise_fetch_error
+        self.canned_image_bytes = canned_image_bytes
         self.recorded_calls: list[tuple[AuthorizedImage, FaceScan]] = []
+        self.fetched_urls: list[str] = []
 
     def search(self, image: AuthorizedImage, scan: FaceScan) -> DiscoveryResult:
         """Execute fake search returning canned response or raising specified error."""
@@ -61,6 +80,13 @@ class FakeDiscoveryProvider:
         if self.canned_result is not None:
             return self.canned_result
         raise NoMatchFoundError("No qualifying public match found by fake provider.")
+
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Return canned image bytes for the given URL, or raise if configured."""
+        if self.raise_fetch_error is not None:
+            raise self.raise_fetch_error
+        self.fetched_urls.append(str(url))
+        return self.canned_image_bytes
 
 
 class SerpAPILensProvider:
@@ -90,6 +116,21 @@ class SerpAPILensProvider:
         if self._client is not None:
             return self._client
         return httpx.Client(timeout=self.timeout)
+
+    def fetch_image(self, url: HttpUrl) -> bytes:
+        """Fetch the raw bytes of a remote match image."""
+        try:
+            resp = self._get_client().get(str(url), timeout=self.timeout)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise DiscoveryUnavailableError(
+                f"Failed to fetch image {url}: HTTP {exc.response.status_code}"
+            ) from exc
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise DiscoveryUnavailableError(
+                f"Failed to fetch image {url}: {exc}"
+            ) from exc
+        return resp.content
 
     def _request_with_retry(
         self,
@@ -192,29 +233,46 @@ class SerpAPILensProvider:
         if not isinstance(matches, list) or not matches:
             raise NoMatchFoundError("No qualifying public match found by visual search.")
 
-        qualifying_match: dict[str, Any] | None = None
+        qualifying: list[DiscoveryMatch] = []
+        seen_platforms: set[str] = set()
         for candidate in matches:
             if not isinstance(candidate, dict):
                 continue
             link = candidate.get("link")
-            if link and isinstance(link, str) and link.startswith(("http://", "https://")):
-                qualifying_match = candidate
-                break
+            if not (link and isinstance(link, str) and link.startswith(("http://", "https://"))):
+                continue
+            platform = candidate.get("source")
+            if not platform or not isinstance(platform, str):
+                netloc = urlparse(link).netloc
+                platform = netloc or "Web"
+            if platform in seen_platforms:
+                continue
+            seen_platforms.add(platform)
+            qualifying.append(
+                DiscoveryMatch(
+                    post=self._build_post(candidate, platform, link),
+                    confidence=None,
+                )
+            )
 
-        if qualifying_match is None:
+        if not qualifying:
             raise NoMatchFoundError("No visual match with a valid public source URL was found.")
 
-        source_url = HttpUrl(qualifying_match["link"])
-        platform = qualifying_match.get("source")
-        if not platform or not isinstance(platform, str):
-            netloc = urlparse(qualifying_match["link"]).netloc
-            platform = netloc or "Web"
+        return DiscoveryResult(
+            provider="serpapi_google_lens",
+            matched_post=qualifying[0].post,
+            confidence=None,
+            matches=qualifying,
+        )
 
-        title = qualifying_match.get("title")
+    def _build_post(self, candidate: dict[str, Any], platform: str, link: str) -> PublicPost:
+        source_url = HttpUrl(link)
+
+        title = candidate.get("title")
         if title and not isinstance(title, str):
             title = str(title)
 
-        text_excerpt = qualifying_match.get("snippet") or qualifying_match.get("text")
+        text_excerpt = candidate.get("snippet") or candidate.get("text")
         if text_excerpt and isinstance(text_excerpt, str):
             if len(text_excerpt) > 500:
                 text_excerpt = text_excerpt[:497] + "..."
@@ -222,24 +280,18 @@ class SerpAPILensProvider:
             text_excerpt = None
 
         image_url = None
-        raw_image_url = qualifying_match.get("thumbnail") or qualifying_match.get("original")
+        raw_image_url = candidate.get("thumbnail") or candidate.get("original")
         if raw_image_url and isinstance(raw_image_url, str) and raw_image_url.startswith(("http://", "https://")):
             try:
                 image_url = HttpUrl(raw_image_url)
             except (ValueError, TypeError, ValidationError):
                 image_url = None
 
-        matched_post = PublicPost(
+        return PublicPost(
             source_url=source_url,
             platform=platform,
             title=title,
             text_excerpt=text_excerpt,
             image_url=image_url,
             retrieved_at=datetime.now(UTC),
-        )
-
-        return DiscoveryResult(
-            provider="serpapi_google_lens",
-            matched_post=matched_post,
-            confidence=None,
         )
