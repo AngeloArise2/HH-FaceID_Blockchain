@@ -2,11 +2,11 @@
 
 You are now doing everything (ledger owner + integrator). `main` is protected — never commit or push directly to it. **Do not rebase, reset, delete, or recreate your working branch between phases.** Because merges to `main` can lag behind your work, you build on a **single long-running branch** that accumulates every phase. Open PRs toward `main` whenever a reviewer is ready, but losing your working branch means losing all progress — so the branch is never discarded.
 
-**Your single working branch is `codex/cleanup/build-prompts-2`** — the branch this file's PR is opened from already. All phases below (including all code work) happen on this same branch unless it is deleted after an early merge; in that case fork the next branch from the merged `main`.
+**Your single working branch is `codex/integration/completion`** — all phases below (including all code work) happen on this branch. This document itself lives on the separate docs PR branch `codex/cleanup/build-prompts-2` and is merged independently; do not mix implementation commits into that branch.
 
 Workflow per phase:
 
-1. `git switch codex/cleanup/build-prompts-2` (create it from `main` only if it doesn't exist: `git switch main && git pull --ff-only && git switch -c codex/cleanup/build-prompts-2`).
+1. `git switch codex/integration/completion` (create it from `main` only if it doesn't exist: `git switch main && git pull --ff-only && git switch -c codex/integration/completion`).
 2. Simply continue working on this branch — **do not branch off `main` again while this branch lives**.
 3. Do the work, then run the quality gate (below) and the `/contract-check` / `/review` flows.
 4. Commit and push the branch (`git push`). Open a PR into `main` for your reviewer **when it's sensible** — you may keep working and push more commits to the same branch until that PR is approved/merged.
@@ -19,7 +19,7 @@ Nothing is lost, but the branch-merge semantics change. Read this before continu
 
 - **Only what is committed *and pushed* is merged.** If your reviewer approves/merges the branch while you have uncommitted working-tree edits, those edits are **not** part of the merge — they stay safely in your working tree, and you keep going on the same branch.
 - **Do not commit any phase while a reviewer is mid-way through approving a PR you don't want merged.** If you want a phase kept out of an upcoming merge, do not push that phase's commits until the earlier PR has merged.
-- **After a merge, your branch was merged into `main`, so it is safe to delete** — `main` now has that work. If you still have uncommitted/local-only work on the branch, copy or commit it first, then re-create the branch from the new `main` (`git switch main && git pull --ff-only && git switch -c codex/cleanup/build-prompts-2`) if you want to keep the same name.
+- **After a merge, your branch was merged into `main`, so it is safe to delete** — `main` now has that work. If you still have uncommitted/local-only work on the branch, copy or commit it first, then re-create the branch from the new `main` (`git switch main && git pull --ff-only && git switch -c codex/integration/completion`) if you want to keep the same name.
 - **Prefer merge commits over squash**: a squash merge makes `main`'s history no longer match your branch's commits, so future PRs from the same branch can show "old" diff noise. A standard merge commit keeps future diffs clean. If the agreed convention is squash, still fine — just merge the new `main` into your branch before opening the next PR.
 - `main` is protected and requires approval, so a "merge while you are only half-done" can only merge what you already pushed. Keep pushing phase-by-phase and you decide when a PR is merge-ready.
 
@@ -45,7 +45,7 @@ drift apart (verification would always fail).
 
 Resolve it by extracting the canonicalizer to the shared contract layer so both modules import it.
 
-> **On the single working branch `codex/cleanup/build-prompts-2`:** add a canonical hashing
+> **On the single working branch `codex/integration/completion`:** add a canonical hashing
 > helper to the shared contract layer (suggest `contracts/hashing.py`, but `contracts/domain.py` is
 > acceptable if the team prefers). It must expose (a)
 > `canonicalize_evidence(evidence: EvidenceBundle) -> str` producing UTF-8 JSON with sorted keys and
@@ -119,7 +119,7 @@ All ledger phases stay on the single working branch — no separate branches per
 
 You edit only `src/facechain/config.py`, `src/facechain/pipeline/`, `src/facechain/cli.py`, and
 `tests/test_pipeline.py`. Call module **public services** only. All integration phases stay on the
-same single working branch (`codex/cleanup/build-prompts-2`).
+same single working branch (`codex/integration/completion`).
 
 ### Integration A — settings boundary
 
