@@ -1,14 +1,35 @@
 # Build prompts 2 — single-owner completion plan
 
-You are now doing everything (ledger owner + integrator). `main` is protected — never commit or push directly to it. For every prompt below: first `git switch main && git pull --ff-only`, then create a fresh branch (`git switch -c <branch>`), do the work, run the quality gate, commit, push, open a PR, and merge via PR approval. Follow `GIT_WORKFLOW.md`, and run the quality gate after every phase:
+You are now doing everything (ledger owner + integrator). `main` is protected — never commit or push directly to it. **Do not rebase, reset, delete, or recreate your working branch between phases.** Because merges to `main` can lag behind your work, you build on a **single long-running branch** that accumulates every phase. Open PRs toward `main` whenever a reviewer is ready, but losing your working branch means losing all progress — so the branch is never discarded.
+
+**Your single working branch is `codex/cleanup/build-prompts-2`** — the branch this file's PR is opened from already. All phases below (including all code work) happen on this same branch unless it is deleted after an early merge; in that case fork the next branch from the merged `main`.
+
+Workflow per phase:
+
+1. `git switch codex/cleanup/build-prompts-2` (create it from `main` only if it doesn't exist: `git switch main && git pull --ff-only && git switch -c codex/cleanup/build-prompts-2`).
+2. Simply continue working on this branch — **do not branch off `main` again while this branch lives**.
+3. Do the work, then run the quality gate (below) and the `/contract-check` / `/review` flows.
+4. Commit and push the branch (`git push`). Open a PR into `main` for your reviewer **when it's sensible** — you may keep working and push more commits to the same branch until that PR is approved/merged.
+5. If `main` moves ahead, merge it **into** your branch (`git fetch origin && git merge origin/main`), resolve conflicts, and continue — never rebase `main` onto yourself and never force-push.
+6. Advance to the next phase on the **same branch**. The branch is the single source of truth for all work; only merge/delete it once everything is complete and merged.
+
+## What happens if the docs PR merges while you are mid-build
+
+Nothing is lost, but the branch-merge semantics change. Read this before continuing after a merge:
+
+- **Only what is committed *and pushed* is merged.** If your reviewer approves/merges the branch while you have uncommitted working-tree edits, those edits are **not** part of the merge — they stay safely in your working tree, and you keep going on the same branch.
+- **Do not commit any phase while a reviewer is mid-way through approving a PR you don't want merged.** If you want a phase kept out of an upcoming merge, do not push that phase's commits until the earlier PR has merged.
+- **After a merge, your branch was merged into `main`, so it is safe to delete** — `main` now has that work. If you still have uncommitted/local-only work on the branch, copy or commit it first, then re-create the branch from the new `main` (`git switch main && git pull --ff-only && git switch -c codex/cleanup/build-prompts-2`) if you want to keep the same name.
+- **Prefer merge commits over squash**: a squash merge makes `main`'s history no longer match your branch's commits, so future PRs from the same branch can show "old" diff noise. A standard merge commit keeps future diffs clean. If the agreed convention is squash, still fine — just merge the new `main` into your branch before opening the next PR.
+- `main` is protected and requires approval, so a "merge while you are only half-done" can only merge what you already pushed. Keep pushing phase-by-phase and you decide when a PR is merge-ready.
+
+Quality gate after every phase:
 
 ```
 uv run ruff check .
 uv run mypy src
 uv run pytest
 ```
-
-then the `/contract-check` and `/review` flows. After each phase, finish your branch: commit, push, open a PR into `main`, get it approved/merged, then delete the merged remote branch. Do **not** begin a prompt that assumes an unapproved contract shape, and do not advance to the next prompt until the previous branch is merged (so you build on the latest `main`).
 
 > Note: the previously merged `ledger/` directory is a Node.js/Hardhat/Solidity implementation that does **not** conform to `contracts/ledger.py` or the Python module spec. Do not build the integration on it. **Remove it entirely in Phase 0b below.**
 
@@ -24,15 +45,17 @@ drift apart (verification would always fail).
 
 Resolve it by extracting the canonicalizer to the shared contract layer so both modules import it.
 
-> Open a contract-only branch `codex/contract/hashing`. Add a canonical hashing helper to the
-> shared contract layer (suggest `contracts/hashing.py`, but `contracts/domain.py` is acceptable
-> if the team prefers). It must expose (a) `canonicalize_evidence(evidence: EvidenceBundle) -> str`
-> producing UTF-8 JSON with sorted keys and compact separators, and (b)
-> `compute_evidence_hash(evidence: EvidenceBundle) -> str` returning the lowercase SHA-256 hex of
-> the canonical bytes. Add contract tests proving key-order stability and determinism. Do not couple
-> this to any single module implementation. Merge the contract PR first, then update
+> **On the single working branch `codex/cleanup/build-prompts-2`:** add a canonical hashing
+> helper to the shared contract layer (suggest `contracts/hashing.py`, but `contracts/domain.py` is
+> acceptable if the team prefers). It must expose (a)
+> `canonicalize_evidence(evidence: EvidenceBundle) -> str` producing UTF-8 JSON with sorted keys and
+> compact separators, and (b) `compute_evidence_hash(evidence: EvidenceBundle) -> str` returning the
+> lowercase SHA-256 hex of the canonical bytes. Add contract tests proving key-order stability and
+> determinism. Do not couple this to any single module implementation. Then update
 > `src/facechain/discovery/service.py` to delegate to the shared helper (its own `canonicalize` /
 > `fingerprint` add no logic). Keep behavior byte-identical; existing discovery tests must still pass.
+> Commit this phase as its own commit so it can be reviewed/merged independently even though it lives
+> on the shared branch.
 
 **Affected owners to acknowledge:** discovery, ledger (both you). State compatibility impact and
 fixture updates in the PR.
@@ -44,25 +67,23 @@ fixture updates in the PR.
 The `ledger/` directory merged on `main` (Node/Hardhat/Solidity: `ledger/contracts/*.sol`,
 `ledger/ledgerService.js`, `ledger/hardhat.config.js`, `ledger/scripts/`, `ledger/test/`,
 `ledger/package.json`, `ledger/package-lock.json`, `ledger/.gitignore`) does **not** conform to
-`contracts/ledger.py` and would confuse the integration. Remove it via a normal branch + PR.
+`contracts/ledger.py` and would confuse the integration. Remove it on the same working branch.
 
-> Open branch `codex/cleanup/remove-js-ledger`. Delete the entire `ledger/` directory. Verify that
-> nothing under `src/`, `contracts/`, `tests/`, or the Python code imports or references the Node
-> implementation (search for `ledgerService`, `hardhat`, `FaceVerificationLedger`, and any
-> `require(`/`ethers`/`console.log` Node artifacts). Confirm no `.github/` workflow depends on it.
-> Ensure `uv run ruff check .`, `uv run mypy src`, and `uv run pytest` stay green (these should be
-> unaffected since the JS ledger was never wired into the Python code). Commit, push, open a PR,
-> get it approved, and merge. Then delete the local and remote `feature/ledger` branches
-> (`git branch -D feature/ledger` locally is fine **after** its PR is merged or abandoned — note it
-> was never merged via PR into `main`; the ledger code reached `main` through a merged PR, so just
-> remove the branch that still exists on the remote with
-> `git push origin --delete feature/ledger`).
+> **On the single working branch:** delete the entire `ledger/` directory. Verify that nothing under
+> `src/`, `contracts/`, `tests/`, or the Python code imports or references the Node implementation
+> (search for `ledgerService`, `hardhat`, `FaceVerificationLedger`, and any `require(`/`ethers`/
+> `console.log` Node artifacts). Confirm no `.github/` workflow depends on it. Ensure
+> `uv run ruff check .`, `uv run mypy src`, and `uv run pytest` stay green (these should be
+> unaffected since the JS ledger was never wired into the Python code). Commit this removal as its
+> own commit. Separately, delete the leftover local and remote `feature/ledger` branches:
+> `git push origin --delete feature/ledger` (remote) and `git branch -D feature/ledger` (local),
+> since that branch's content is superseded by this removal.
 
 ---
 
 ## Ledger module
 
-Branch naming follows `codex/ledger/<short-description>`.
+All ledger phases stay on the single working branch — no separate branches per phase.
 
 ### Ledger Phase 1 — canonical hash
 
@@ -97,8 +118,8 @@ Branch naming follows `codex/ledger/<short-description>`.
 ## Integration (you are also the integrator)
 
 You edit only `src/facechain/config.py`, `src/facechain/pipeline/`, `src/facechain/cli.py`, and
-`tests/test_pipeline.py`. Call module **public services** only. Branch naming uses
-`codex/integration/<short-description>`.
+`tests/test_pipeline.py`. Call module **public services** only. All integration phases stay on the
+same single working branch (`codex/cleanup/build-prompts-2`).
 
 ### Integration A — settings boundary
 
@@ -141,12 +162,13 @@ You edit only `src/facechain/config.py`, `src/facechain/pipeline/`, `src/facecha
 
 ### Integration D — wire in the real ledger
 
-> Rebase your integration branch on the latest `main` now that Ledger's real adapter is merged.
-> In `src/facechain/pipeline/`, replace the fake `EvidenceLedger` with the real implementation
-> imported from `src/facechain/ledger/` (public service only). Update `config.py` usage so
-> `ANVIL_RPC_URL` / `ANVIL_PRIVATE_KEY` / `CHAIN_ID` match what Ledger's adapter expects — check
-> `contracts/ledger.py` and Ledger's own tests for the exact call signature. Keep the fake ledger
-> available as a test double. Re-run all `test_pipeline.py` tests — no live Anvil required for CI.
+> **On the same working branch:** if `main` moved ahead, merge it **into** your branch first
+> (`git fetch origin && git merge origin/main`). In `src/facechain/pipeline/`, replace the fake
+> `EvidenceLedger` with the real implementation imported from `src/facechain/ledger/` (public service
+> only). Update `config.py` usage so `ANVIL_RPC_URL` / `ANVIL_PRIVATE_KEY` / `CHAIN_ID` match what
+> Ledger's adapter expects — check `contracts/ledger.py` and Ledger's own tests for the exact call
+> signature. Keep the fake ledger available as a test double. Re-run all `test_pipeline.py` tests —
+> no live Anvil required for CI.
 
 ### Integration E — full mocked end-to-end suite
 
@@ -172,11 +194,13 @@ You edit only `src/facechain/config.py`, `src/facechain/pipeline/`, `src/facecha
 
 ### Integration G — open the integration PR
 
-> Open a PR from your integration branch to `main` titled clearly (e.g.
-> `feat(pipeline): wire identity → discovery → ledger end-to-end`). List which module public APIs
-> you called (names only), confirm you did not modify anything under
-> `src/facechain/identity/`, `src/facechain/discovery/`, or `src/facechain/ledger/`, and link the
-> four mocked test cases plus the real Anvil run's evidence.json (redacted). Review the boundaries.
+> When the whole pipeline is working, open a PR from the single working branch to `main` titled
+> clearly (e.g. `feat(pipeline): wire identity → discovery → ledger end-to-end`). List which module
+> public APIs you called (names only), confirm you did not modify anything under
+> `src/facechain/identity/`, `src/facechain/discovery/`, or `src/facechain/ledger/` beyond the agreed
+> shared-hash delegation in Phase 0, and link the four mocked test cases plus the real Anvil run's
+> evidence.json (redacted). Review the boundaries. After it merges, the single working branch can be
+> deleted.
 
 ---
 
@@ -193,16 +217,17 @@ You edit only `src/facechain/config.py`, `src/facechain/pipeline/`, `src/facecha
 
 ---
 
-## Recommended order (just do these top to bottom)
+## Recommended order (just do these top to bottom, all on one branch)
 
-1. Phase 0 — contract hashing (merge first)
+1. Phase 0 — contract hashing
 2. Phase 0b — remove the Node.js/Hardhat/Solidity ledger
 3. Ledger Phase 1 → 2 → 3
-4. Integration A (config) — can run in parallel with Ledger 2
+4. Integration A (config) — can be done any time after 1
 5. Integration B (pipeline skeleton) and C (CLI) — depend on A
 6. Integration D and E — depend on Ledger + B/C
 7. Integration F — real run
 8. Demo + docs
+9. Integration G — final review/merge, then delete the branch
 
 ## Contract-change reminder
 
