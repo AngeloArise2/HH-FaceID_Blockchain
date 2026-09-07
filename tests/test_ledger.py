@@ -9,12 +9,16 @@ from pydantic import HttpUrl
 from contracts.domain import EvidenceBundle, PublicPost
 from contracts.hashing import canonicalize_evidence, compute_evidence_hash
 from contracts.ledger import LedgerReceipt, VerificationResult
+from facechain.config import Settings
 from facechain.ledger import (
+    AnvilWeb3Adapter,
     EvidenceLedger,
     FakeLedgerProvider,
     LedgerError,
     LedgerProvider,
     LedgerUnavailableError,
+    Web3Adapter,
+    Web3LedgerProvider,
 )
 
 
@@ -129,3 +133,107 @@ def test_ledger_propagates_typed_unavailable_error() -> None:
         ledger.anchor(bundle)
     with pytest.raises(LedgerUnavailableError):
         ledger.verify(bundle)
+
+
+class FakeWeb3Adapter:
+    """Deterministic in-memory web3 adapter for provider tests (no live node)."""
+
+    def __init__(
+        self,
+        *,
+        chain_id: int = 31337,
+        chain_id_error: Exception | None = None,
+        anchor_error: Exception | None = None,
+    ) -> None:
+        self._chain_id = chain_id
+        self._chain_id_error = chain_id_error
+        self._anchor_error = anchor_error
+        self.last_anchored_sha256: str | None = None
+        self.anchored_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def chain_id(self) -> int:
+        if self._chain_id_error is not None:
+            raise self._chain_id_error
+        return self._chain_id
+
+    def anchor(self, evidence_sha256: str) -> tuple[str, datetime]:
+        if self._anchor_error is not None:
+            raise self._anchor_error
+        self.last_anchored_sha256 = evidence_sha256
+        return "0x" + "1" * 64, self.anchored_at
+
+
+def _web3_settings(*, chain_id: int = 31337) -> Settings:
+    return Settings(
+        anvil_rpc_url="http://127.0.0.1:8545",
+        anvil_private_key="0x" + "1" * 64,
+        chain_id=chain_id,
+    )
+
+
+def test_anvil_web3_adapter_conforms_to_protocol() -> None:
+    adapter = AnvilWeb3Adapter(
+        rpc_url="http://127.0.0.1:8545",
+        private_key="0x" + "1" * 64,
+        chain_id=31337,
+    )
+    assert isinstance(adapter, Web3Adapter)
+
+
+def test_web3_provider_anchors_successfully() -> None:
+    fake = FakeWeb3Adapter(chain_id=31337)
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+
+    receipt = provider.anchor("a" * 64)
+
+    assert isinstance(receipt, LedgerReceipt)
+    assert receipt.evidence_sha256 == "a" * 64
+    assert receipt.chain_id == 31337
+    assert receipt.transaction_hash == "0x" + "1" * 64
+    assert receipt.anchored_at == fake.anchored_at
+    assert fake.last_anchored_sha256 == "a" * 64
+
+
+def test_web3_provider_rejects_wrong_chain_id() -> None:
+    fake = FakeWeb3Adapter(chain_id=1337)
+    provider = Web3LedgerProvider(settings=_web3_settings(chain_id=31337), adapter=fake)
+
+    with pytest.raises(LedgerUnavailableError, match="Wrong chain id"):
+        provider.anchor("a" * 64)
+
+    assert fake.last_anchored_sha256 is None
+
+
+def test_web3_provider_surfaces_unreachable_chain() -> None:
+    fake = FakeWeb3Adapter(chain_id_error=ConnectionError("connection refused"))
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+
+    with pytest.raises(LedgerUnavailableError):
+        provider.anchor("a" * 64)
+
+
+def test_web3_provider_propagates_receipt_failure() -> None:
+    fake = FakeWeb3Adapter(anchor_error=LedgerUnavailableError("receipt status 0"))
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+
+    with pytest.raises(LedgerUnavailableError, match="receipt status 0"):
+        provider.anchor("a" * 64)
+
+
+def test_web3_provider_wraps_unknown_adapter_failure() -> None:
+    fake = FakeWeb3Adapter(anchor_error=RuntimeError("boom"))
+    provider = Web3LedgerProvider(settings=_web3_settings(), adapter=fake)
+
+    with pytest.raises(LedgerUnavailableError):
+        provider.anchor("a" * 64)
+
+
+def test_settings_load_anvil_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANVIL_RPC_URL", "http://127.0.0.1:8545")
+    monkeypatch.setenv("CHAIN_ID", "31337")
+
+    settings = Settings(anvil_private_key="0x" + "2" * 64)
+
+    assert settings.anvil_rpc_url == "http://127.0.0.1:8545"
+    assert settings.chain_id == 31337
+    assert settings.anvil_private_key == "0x" + "2" * 64
