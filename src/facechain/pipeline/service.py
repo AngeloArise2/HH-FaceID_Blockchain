@@ -1,10 +1,10 @@
-"""Pipeline orchestration skeleton; calls module public services in order."""
+"""Pipeline orchestration; calls module public services in order."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -14,17 +14,9 @@ from contracts.events import PipelineEvent
 from contracts.ledger import LedgerReceipt, VerificationResult
 from facechain.discovery import DiscoveryService, NoMatchFoundError
 from facechain.identity import IdentityService
+from facechain.ledger import EvidenceLedger
 
 EventStage = Literal["validated", "face_scanned", "post_found", "anchored", "verified", "failed"]
-
-
-@runtime_checkable
-class EvidenceLedger(Protocol):
-    """Placeholder ledger boundary; structurally matches ``contracts/ledger.py``."""
-
-    def anchor(self, evidence: EvidenceBundle) -> LedgerReceipt: ...
-
-    def verify(self, evidence: EvidenceBundle) -> VerificationResult: ...
 
 
 class PipelineRunResult(BaseModel):

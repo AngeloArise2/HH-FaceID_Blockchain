@@ -1,8 +1,8 @@
 """Integration pipeline boundary."""
 
+from facechain.ledger import EvidenceLedger
 from facechain.pipeline.service import (
     EventStage,
-    EvidenceLedger,
     FaceVerificationPipeline,
     PipelineRunResult,
 )
